@@ -1,0 +1,45 @@
+{
+  "interface": "eth0",
+  "modules": {
+    "portscan": true,
+    "bruteforce": true,
+    "dos": true,
+    "spoof": true,
+    "macfilter": true
+  },
+  "portscan": {
+    "window_sec": 5,
+    "port_threshold": 10,
+    "syn_threshold": 5,
+    "block_seconds": 120
+  },
+  "bruteforce": {
+    "threshold": 5,
+    "window_sec": 60,
+    "block_seconds": 120
+  },
+  "dos": {
+    "threshold_pps": 500,
+    "block_seconds": 60
+  },
+  "spoof": {
+    "arp_watch": true,
+    "whitelist_host": false,
+    "host_ip": "",
+    "arp_alert_cooldown": 60,
+    "ttl_deviation": 20,
+    "ttl_min_samples": 20,
+    "block_seconds": 120,
+    "whitelist_ips": []
+  },
+  "macfilter": {
+    "mode": "whitelist",
+    "allowed_macs": [],
+    "blocked_macs": [],
+    "detected_macs": []
+  },
+  "logging": {
+    "log_dir": "/home/kali/Desktop/nids_edit_metasploit/logs",
+    "log_to_file": true
+  }
+}

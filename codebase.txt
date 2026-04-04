@@ -1,0 +1,48 @@
+NIDS Testing Commands
+=====================
+
+STEP 1: FIND YOUR IP ADDRESSES
+-------------------------------
+Run on BOTH machines:
+  ip a | grep inet
+
+Or:
+  hostname -I
+
+Note the IP for each VM. Replace the IPs below with your actual ones.
+Defense = the VM running NIDS
+Attacker = the VM running the attacks
+Gateway = your router IP (usually .1 or .2 of your subnet)
+
+To find gateway:
+  ip route | grep default
+
+
+STEP 2: DEFENSE KALI
+---------------------
+ARP spoof blocking needs nftables (drops frames at netdev ingress on your interface):
+  sudo apt install nftables
+  Note: arpspoof on the ATTACKER will still print lines — it only logs what it SENDS.
+  Blocking runs on the DEFENDER; check there (e.g. arp -n) that the poison does not stick.
+
+Start NIDS:       sudo python3 gui.py
+Start SSH:        ./hostbruteforce.sh
+Check iptables:   sudo iptables -L INPUT -n --line-numbers
+Flush all blocks: sudo iptables -F NIDS_PORTSCAN && sudo iptables -F NIDS_BRUTEFORCE && sudo iptables -F NIDS_DOS && sudo iptables -F NIDS_SPOOF && sudo iptables -F NIDS_MACFILTER
+
+
+STEP 3: ATTACKER KALI
+----------------------
+
+1. Port Scan
+   nmap -sS -T5 -p 1-1000 <DEFENSE_IP>
+   nmap -sS -T4 -p 1-1000 <DEFENSE_IP>
+
+2. DoS / ICMP Flood
+   sudo hping3 -1 --flood <DEFENSE_IP>
+
+3. SSH Brute Force (needs SSH running on defense)
+   hydra -l root -P /usr/share/wordlists/rockyou.txt ssh://<DEFENSE_IP>
+
+4. ARP Spoof (needs spoof module enabled on defense)
+   sudo arpspoof -i eth0 -t <DEFENSE_IP> <GATEWAY_IP>
