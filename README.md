@@ -1,13 +1,14 @@
-# NIDS — Network Intrusion Detection System (Metasploit lab bundle)
+# NIDS — A Custom made Network Intrusion Detection System
 
-A Python-based Network Intrusion Detection System that monitors network traffic in real time and blocks malicious activity using iptables.
+My program is a Python-based Network Intrusion Detection System that monitors network traffic in real time and blocks them, also offering to block the MAC addresses of the attacker.
 
-This directory is a **full copy** of the NIDS plus a **`metasploit_lab/`** folder: Metasploit resource scripts, an ICMP flood helper, a small SSH password list for safe failed logins, and a step-by-step **`metasploit_lab/RUNBOOK.md`** for demonstrations alongside Metasploit.
+This version is an update of my original work which has been tested to work on metasploit in Kali Linux. 
 
 ## What It Does
 
-This program watches your network interface for common attacks and automatically blocks the attacker's IP or MAC address. It has four detection modules:
+This program watches your network interface for common attacks and automatically blocks the attacker's IP or MAC address. 
 
+It has four detection modules:
 - **Port Scan Detector** — Catches TCP SYN scans (like nmap) by tracking how many unique ports a single IP hits in a short time window. Uses Scapy for packet sniffing.
 - **Brute-Force Detector** — Monitors SSH login attempts through system logs (journalctl). If someone fails too many times in a row, they get blocked.
 - **DoS Detector** — Samples ICMP traffic using tcpdump and blocks any source flooding you with ping requests above a threshold.
@@ -16,21 +17,15 @@ This program watches your network interface for common attacks and automatically
 There is also a **MAC Address Filter** that supports whitelist and blacklist modes, and a detected MAC review system where blocked MACs are saved for you to decide what to do with them later.
 
 ## How It Works
-
 - Each module runs in its own thread
-- Blocking is done through custom iptables chains (`NIDS_BLOCK`, `NIDS_SPOOF`, `NIDS_MAC`)
+- Blocking is done through custom iptables chains (`NIDS_PORTSCAN`, `NIDS_BRUTEFORCE`, `NIDS_DOS`, `NIDS_SPOOF`, `NIDS_MACFILTER`)
 - All settings (thresholds, enabled modules, interface, etc.) are saved in `nids_config.json`
 - Logs are saved to the `logs/` folder with timestamps
 
 ## Requirements
+- Python 3, PyQt5, Scapy, Linux with iptables, Root privileges (needed for packet capture and firewall rules)
 
-- Python 3
-- PyQt5
-- Scapy
-- Linux with iptables
-- Root privileges (needed for packet capture and firewall rules)
-
-## How to Run
+## How to Run / Prerequisites
 
 ```bash
 # Install dependencies
@@ -67,8 +62,11 @@ The GUI has four tabs:
 | `modules/macfilter.py` | MAC address filtering |
 | `modules/firewall.py` | Shared iptables helper functions |
 | `modules/netutil.py` | Network utility functions (IP, subnet, gateway) |
+| `modules/detected_mac_persist.py` | Saves detected MACs into nids_config.json |
+| `modules/arpnft.py` | Optional nftables ARP drop (used with spoof blocking) |
 
-## Metasploit lab extras
+
+## Metasploit extras
 
 | Path | Purpose |
 |------|---------|
