@@ -963,7 +963,6 @@ class MainWindow(QMainWindow):
         from modules.firewall import destroy_chain as _destroy
         for chain in ["NIDS_PORTSCAN", "NIDS_BRUTEFORCE", "NIDS_DOS", "NIDS_SPOOF", "NIDS_MACFILTER"]:
             flush_chain(chain)
-        _destroy("NIDS_BLOCK")
         self._on_log_line(f"{ts} [ENGINE] All blocks cleared")
         from modules import arpnft
         arpnft.arp_flush_blocked()

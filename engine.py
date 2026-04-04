@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import load_config
 from modules import bruteforce, dos, portscan, spoof, macfilter
-from modules.firewall import destroy_chain
+
 
 DETECTORS = {
     "portscan": portscan,
@@ -76,9 +76,6 @@ class NIDSEngine:
     def start(self):
         """Start all enabled modules in background threads."""
         enabled = self.cfg["modules"]
-
-        for stale in ["NIDS_BLOCK"]:
-            destroy_chain(stale)
 
         self._log(f"{_ts()} [ENGINE] Starting NIDS — interface: {self.cfg['interface']}")
 
