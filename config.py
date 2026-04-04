@@ -24,6 +24,9 @@ DEFAULTS = {
         "window_sec": 5,
         "port_threshold": 10,
         "syn_threshold": 15,
+        "slow_window_sec": 120,
+        "slow_port_threshold": 6,
+        "slow_syn_threshold": 6,
         "block_seconds": 120,
     },
 
@@ -40,6 +43,7 @@ DEFAULTS = {
 
     "spoof": {
         "arp_watch": True,
+        "gateway_auto_whitelist": True,
         "whitelist_host": False,
         "host_ip": "",
         "arp_alert_cooldown": 60,

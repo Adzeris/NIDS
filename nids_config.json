@@ -11,6 +11,9 @@
     "window_sec": 5,
     "port_threshold": 10,
     "syn_threshold": 5,
+    "slow_window_sec": 120,
+    "slow_port_threshold": 6,
+    "slow_syn_threshold": 6,
     "block_seconds": 120
   },
   "bruteforce": {
@@ -24,6 +27,7 @@
   },
   "spoof": {
     "arp_watch": true,
+    "gateway_auto_whitelist": true,
     "whitelist_host": false,
     "host_ip": "",
     "arp_alert_cooldown": 60,
@@ -36,7 +40,13 @@
     "mode": "whitelist",
     "allowed_macs": [],
     "blocked_macs": [],
-    "detected_macs": []
+    "detected_macs": [
+      {
+        "mac": "00:0C:29:AD:13:B7",
+        "last_ip": "192.168.92.129",
+        "first_seen": "2026-04-04 06:54:04"
+      }
+    ]
   },
   "logging": {
     "log_dir": "/home/kali/Desktop/nids_edit_metasploit/logs",

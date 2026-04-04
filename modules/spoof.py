@@ -212,7 +212,7 @@ def run_detector(cfg, stop_event=None):
     _start_time = time.time()
 
     _safe_ips = {"0.0.0.0", "255.255.255.255"}
-    if _gateway_ip:
+    if _gateway_ip and cfg["spoof"].get("gateway_auto_whitelist", True):
         _safe_ips.add(_gateway_ip)
     if cfg["spoof"].get("whitelist_host") and cfg["spoof"].get("host_ip", "").strip():
         _safe_ips.add(cfg["spoof"]["host_ip"].strip())
@@ -242,8 +242,10 @@ def run_detector(cfg, stop_event=None):
     flush_chain(CHAIN)
 
     _emit(f"[START] Spoof detector on {iface} (IP: {_defense_ip}, subnet: {_local_net})")
-    if _gateway_ip:
+    if _gateway_ip and cfg["spoof"].get("gateway_auto_whitelist", True):
         _emit(f"[INFO] Gateway {_gateway_ip} auto-whitelisted")
+    elif _gateway_ip:
+        _emit(f"[INFO] Gateway auto-whitelist disabled for {_gateway_ip}")
     if cfg["spoof"].get("whitelist_host") and cfg["spoof"].get("host_ip", "").strip():
         _emit(f"[INFO] Host machine {cfg['spoof']['host_ip'].strip()} whitelisted")
     _emit(f"[INFO] ARP watch: {cfg['spoof'].get('arp_watch', True)}, "

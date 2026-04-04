@@ -16,6 +16,8 @@ CHAIN = "NIDS_PORTSCAN"
 
 seen_ports = defaultdict(deque)
 seen_syns = defaultdict(deque)
+slow_seen_ports = defaultdict(deque)
+slow_seen_syns = defaultdict(deque)
 blocked_ips = set()
 
 _callback = None
@@ -44,6 +46,30 @@ def _cleanup_old(src, now, window):
         seen_syns[src].popleft()
 
 
+def _cleanup_slow(src, now, window):
+    while slow_seen_ports[src] and (now - slow_seen_ports[src][0][0]) > window:
+        slow_seen_ports[src].popleft()
+    while slow_seen_syns[src] and (now - slow_seen_syns[src][0]) > window:
+        slow_seen_syns[src].popleft()
+
+
+def _block_scan(src, pkt, unique_ports, syn_count, window, label):
+    src_mac = pkt[Ether].src.upper() if pkt.haslayer(Ether) else "unknown"
+    _emit(
+        f"[ALERT] {label} port scan from {src} / {src_mac} "
+        f"({len(unique_ports)} ports / {syn_count} SYNs in {window}s)"
+    )
+    block_ip(CHAIN, src)
+    blocked_ips.add(src)
+    if src_mac != "unknown":
+        persist_detected_mac(src_mac, src, _emit)
+    _emit(f"[BLOCK] Blocked {src}")
+    seen_ports[src].clear()
+    seen_syns[src].clear()
+    slow_seen_ports[src].clear()
+    slow_seen_syns[src].clear()
+
+
 def _on_packet(pkt):
     now = time.time()
     if now - _start_time < 1:
@@ -66,24 +92,28 @@ def _on_packet(pkt):
     window = _cfg["portscan"]["window_sec"]
     port_thr = _cfg["portscan"]["port_threshold"]
     syn_thr = _cfg["portscan"]["syn_threshold"]
+    slow_window = _cfg["portscan"].get("slow_window_sec", 120)
+    slow_port_thr = _cfg["portscan"].get("slow_port_threshold", port_thr)
+    slow_syn_thr = _cfg["portscan"].get("slow_syn_threshold", syn_thr)
 
     seen_ports[src].append((now, dport))
     seen_syns[src].append(now)
+    slow_seen_ports[src].append((now, dport))
+    slow_seen_syns[src].append(now)
     _cleanup_old(src, now, window)
+    _cleanup_slow(src, now, slow_window)
 
     unique_ports = {p for _, p in seen_ports[src]}
     syn_count = len(seen_syns[src])
+    slow_unique_ports = {p for _, p in slow_seen_ports[src]}
+    slow_syn_count = len(slow_seen_syns[src])
 
     if len(unique_ports) >= port_thr and syn_count >= syn_thr:
-        src_mac = pkt[Ether].src.upper() if pkt.haslayer(Ether) else "unknown"
-        _emit(f"[ALERT] Port scan from {src} / {src_mac} ({len(unique_ports)} ports / {syn_count} SYNs in {window}s)")
-        block_ip(CHAIN, src)
-        blocked_ips.add(src)
-        if src_mac != "unknown":
-            persist_detected_mac(src_mac, src, _emit)
-        _emit(f"[BLOCK] Blocked {src}")
-        seen_ports[src].clear()
-        seen_syns[src].clear()
+        _block_scan(src, pkt, unique_ports, syn_count, window, "Port")
+        return
+
+    if len(slow_unique_ports) >= slow_port_thr and slow_syn_count >= slow_syn_thr:
+        _block_scan(src, pkt, slow_unique_ports, slow_syn_count, slow_window, "Slow")
 
 
 def run_detector(cfg, stop_event=None):
@@ -97,6 +127,8 @@ def run_detector(cfg, stop_event=None):
 
     seen_ports.clear()
     seen_syns.clear()
+    slow_seen_ports.clear()
+    slow_seen_syns.clear()
     blocked_ips.clear()
 
     ensure_chain(CHAIN)
@@ -110,7 +142,13 @@ def run_detector(cfg, stop_event=None):
          "--name", "nids_ps", "--rcheck", "--seconds", str(window),
          "--hitcount", str(syn_thr), "-j", "DROP"])
 
-    _emit(f"[START] Port-scan detector on {iface} (IP: {_defense_ip})")
+    _emit(
+        f"[START] Port-scan detector on {iface} (IP: {_defense_ip}) "
+        f"fast={cfg['portscan']['port_threshold']} ports/{cfg['portscan']['syn_threshold']} SYNs/{cfg['portscan']['window_sec']}s "
+        f"slow={cfg['portscan'].get('slow_port_threshold', cfg['portscan']['port_threshold'])} ports/"
+        f"{cfg['portscan'].get('slow_syn_threshold', cfg['portscan']['syn_threshold'])} SYNs/"
+        f"{cfg['portscan'].get('slow_window_sec', cfg['portscan']['window_sec'])}s"
+    )
 
     try:
         while stop_event is None or not stop_event.is_set():

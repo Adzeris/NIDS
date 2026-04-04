@@ -16,7 +16,7 @@ from PyQt5.QtWidgets import (
     QCheckBox, QGroupBox, QFormLayout, QComboBox, QSpinBox,
     QPlainTextEdit, QSplitter, QFrame, QMessageBox, QListWidget,
     QListWidgetItem, QInputDialog, QStatusBar, QAction, QMenuBar,
-    QScrollArea,
+    QScrollArea, QToolButton,
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette
@@ -56,6 +56,20 @@ class EngineWorker(QThread):
     def stop_engine(self):
         if self.engine:
             self.engine.stop()
+
+
+class ClickFocusSpinBox(QSpinBox):
+    """Ignore mouse-wheel changes unless the field already has focus."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +341,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(iface_grp)
 
         # Module toggles
-        mod_grp = QGroupBox("Enabled Modules")
+        mod_grp = QGroupBox("Modules")
         mod_lay = QVBoxLayout(mod_grp)
         mod_lay.setSpacing(10)
         mod_lay.setContentsMargins(14, 20, 14, 14)
@@ -341,6 +355,32 @@ class MainWindow(QMainWindow):
             mod_lay.addWidget(cb)
         lay.addWidget(mod_grp)
 
+        advanced_grp = QGroupBox("Advanced Options")
+        advanced_lay = QVBoxLayout(advanced_grp)
+        advanced_lay.setSpacing(10)
+        advanced_lay.setContentsMargins(14, 20, 14, 14)
+        self.advanced_toggle = QToolButton()
+        self.advanced_toggle.setText("Show Advanced Options")
+        self.advanced_toggle.setCheckable(True)
+        self.advanced_toggle.setChecked(False)
+        self.advanced_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.advanced_toggle.setArrowType(Qt.RightArrow)
+        advanced_lay.addWidget(self.advanced_toggle)
+
+        self.advanced_content = QWidget()
+        advanced_content_lay = QVBoxLayout(self.advanced_content)
+        advanced_content_lay.setSpacing(14)
+        advanced_content_lay.setContentsMargins(0, 6, 0, 0)
+        self.advanced_content.setVisible(False)
+
+        def _toggle_advanced(checked):
+            self.advanced_toggle.setText("Hide Advanced Options" if checked else "Show Advanced Options")
+            self.advanced_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow)
+            self.advanced_content.setVisible(checked)
+
+        self.advanced_toggle.toggled.connect(_toggle_advanced)
+        advanced_lay.addWidget(self.advanced_content)
+
         # Port Scan thresholds
         ps_grp = QGroupBox("Port Scan Thresholds")
         ps_lay = QFormLayout(ps_grp)
@@ -348,17 +388,31 @@ class MainWindow(QMainWindow):
         ps_lay.setHorizontalSpacing(20)
         ps_lay.setContentsMargins(14, 20, 14, 14)
 
-        self.spin_ps_ports = QSpinBox(); self.spin_ps_ports.setRange(1, 9999)
-        self.spin_ps_syns = QSpinBox(); self.spin_ps_syns.setRange(1, 9999)
-        self.spin_ps_window = QSpinBox(); self.spin_ps_window.setRange(1, 300)
-        self.spin_ps_block = QSpinBox(); self.spin_ps_block.setRange(1, 9999)
-        for sp in [self.spin_ps_ports, self.spin_ps_syns, self.spin_ps_window, self.spin_ps_block]:
+        self.spin_ps_ports = ClickFocusSpinBox(); self.spin_ps_ports.setRange(1, 9999)
+        self.spin_ps_syns = ClickFocusSpinBox(); self.spin_ps_syns.setRange(1, 9999)
+        self.spin_ps_window = ClickFocusSpinBox(); self.spin_ps_window.setRange(1, 300)
+        self.spin_ps_slow_ports = ClickFocusSpinBox(); self.spin_ps_slow_ports.setRange(1, 9999)
+        self.spin_ps_slow_syns = ClickFocusSpinBox(); self.spin_ps_slow_syns.setRange(1, 9999)
+        self.spin_ps_slow_window = ClickFocusSpinBox(); self.spin_ps_slow_window.setRange(5, 3600)
+        self.spin_ps_block = ClickFocusSpinBox(); self.spin_ps_block.setRange(1, 9999)
+        for sp in [
+            self.spin_ps_ports,
+            self.spin_ps_syns,
+            self.spin_ps_window,
+            self.spin_ps_slow_ports,
+            self.spin_ps_slow_syns,
+            self.spin_ps_slow_window,
+            self.spin_ps_block,
+        ]:
             sp.setMinimumHeight(30)
         ps_lay.addRow("Unique ports:", self.spin_ps_ports)
         ps_lay.addRow("SYN count:", self.spin_ps_syns)
         ps_lay.addRow("Window (sec):", self.spin_ps_window)
+        ps_lay.addRow("Slow unique ports:", self.spin_ps_slow_ports)
+        ps_lay.addRow("Slow SYN count:", self.spin_ps_slow_syns)
+        ps_lay.addRow("Slow window (sec):", self.spin_ps_slow_window)
         ps_lay.addRow("Block duration (sec):", self.spin_ps_block)
-        lay.addWidget(ps_grp)
+        advanced_content_lay.addWidget(ps_grp)
 
         # Brute-force thresholds
         bf_grp = QGroupBox("Brute-Force Thresholds")
@@ -367,15 +421,15 @@ class MainWindow(QMainWindow):
         bf_lay.setHorizontalSpacing(20)
         bf_lay.setContentsMargins(14, 20, 14, 14)
 
-        self.spin_bf_threshold = QSpinBox(); self.spin_bf_threshold.setRange(1, 999)
-        self.spin_bf_window = QSpinBox(); self.spin_bf_window.setRange(1, 600)
-        self.spin_bf_block = QSpinBox(); self.spin_bf_block.setRange(1, 9999)
+        self.spin_bf_threshold = ClickFocusSpinBox(); self.spin_bf_threshold.setRange(1, 999)
+        self.spin_bf_window = ClickFocusSpinBox(); self.spin_bf_window.setRange(1, 600)
+        self.spin_bf_block = ClickFocusSpinBox(); self.spin_bf_block.setRange(1, 9999)
         for sp in [self.spin_bf_threshold, self.spin_bf_window, self.spin_bf_block]:
             sp.setMinimumHeight(30)
         bf_lay.addRow("Failed attempts:", self.spin_bf_threshold)
         bf_lay.addRow("Window (sec):", self.spin_bf_window)
         bf_lay.addRow("Block duration (sec):", self.spin_bf_block)
-        lay.addWidget(bf_grp)
+        advanced_content_lay.addWidget(bf_grp)
 
         # DoS thresholds
         dos_grp = QGroupBox("DoS / ICMP Flood Thresholds")
@@ -384,13 +438,13 @@ class MainWindow(QMainWindow):
         dos_lay.setHorizontalSpacing(20)
         dos_lay.setContentsMargins(14, 20, 14, 14)
 
-        self.spin_dos_pps = QSpinBox(); self.spin_dos_pps.setRange(1, 99999)
-        self.spin_dos_block = QSpinBox(); self.spin_dos_block.setRange(1, 9999)
+        self.spin_dos_pps = ClickFocusSpinBox(); self.spin_dos_pps.setRange(1, 99999)
+        self.spin_dos_block = ClickFocusSpinBox(); self.spin_dos_block.setRange(1, 9999)
         for sp in [self.spin_dos_pps, self.spin_dos_block]:
             sp.setMinimumHeight(30)
         dos_lay.addRow("ICMP pps threshold:", self.spin_dos_pps)
         dos_lay.addRow("Block duration (sec):", self.spin_dos_block)
-        lay.addWidget(dos_grp)
+        advanced_content_lay.addWidget(dos_grp)
 
         # Spoof thresholds
         sp_grp = QGroupBox("Spoof Detection Thresholds")
@@ -402,10 +456,10 @@ class MainWindow(QMainWindow):
         self.chk_arp_watch = QCheckBox("Enable ARP poisoning detection")
         sp_lay.addRow(self.chk_arp_watch)
 
-        self.spin_sp_arp_cooldown = QSpinBox(); self.spin_sp_arp_cooldown.setRange(1, 600)
-        self.spin_sp_ttl_dev = QSpinBox(); self.spin_sp_ttl_dev.setRange(1, 128)
-        self.spin_sp_ttl_samples = QSpinBox(); self.spin_sp_ttl_samples.setRange(2, 200)
-        self.spin_sp_block = QSpinBox(); self.spin_sp_block.setRange(1, 9999)
+        self.spin_sp_arp_cooldown = ClickFocusSpinBox(); self.spin_sp_arp_cooldown.setRange(1, 600)
+        self.spin_sp_ttl_dev = ClickFocusSpinBox(); self.spin_sp_ttl_dev.setRange(1, 128)
+        self.spin_sp_ttl_samples = ClickFocusSpinBox(); self.spin_sp_ttl_samples.setRange(2, 200)
+        self.spin_sp_block = ClickFocusSpinBox(); self.spin_sp_block.setRange(1, 9999)
         for sp in [self.spin_sp_arp_cooldown, self.spin_sp_ttl_dev,
                    self.spin_sp_ttl_samples, self.spin_sp_block]:
             sp.setMinimumHeight(30)
@@ -414,12 +468,21 @@ class MainWindow(QMainWindow):
         sp_lay.addRow("TTL min samples:", self.spin_sp_ttl_samples)
         sp_lay.addRow("Block duration (sec):", self.spin_sp_block)
 
-        self.chk_whitelist_host = QCheckBox("Whitelist host machine IP (for bridged mode)")
+        wl_hint = QLabel("Whitelist / exception settings")
+        wl_hint.setStyleSheet("color: #8b949e; margin-top: 6px;")
+        sp_lay.addRow(wl_hint)
+
+        self.chk_whitelist_host = QCheckBox("Whitelist Host IP (bridged mode only)")
         sp_lay.addRow(self.chk_whitelist_host)
         self.host_ip_edit = QLineEdit()
         self.host_ip_edit.setPlaceholderText("e.g. 192.168.1.100")
         self.host_ip_edit.setMinimumHeight(30)
         sp_lay.addRow("Host machine IP:", self.host_ip_edit)
+
+        self.chk_gateway_auto_whitelist = QCheckBox(
+            "Gateway Auto Whitelist (Warning, turning it off can break the internet if using bridged)"
+        )
+        sp_lay.addRow(self.chk_gateway_auto_whitelist)
 
         wl_label = QLabel("IP Whitelist (never blocked by spoof detector):")
         wl_label.setStyleSheet("color: #8b949e; margin-top: 6px;")
@@ -437,7 +500,9 @@ class MainWindow(QMainWindow):
         wl_btns.addStretch()
         sp_lay.addRow(wl_btns)
 
-        lay.addWidget(sp_grp)
+        advanced_content_lay.addWidget(sp_grp)
+        advanced_content_lay.addStretch()
+        lay.addWidget(advanced_grp)
 
         # Save button
         save_row = QHBoxLayout()
@@ -740,6 +805,9 @@ class MainWindow(QMainWindow):
         self.spin_ps_ports.setValue(ps["port_threshold"])
         self.spin_ps_syns.setValue(ps["syn_threshold"])
         self.spin_ps_window.setValue(ps["window_sec"])
+        self.spin_ps_slow_ports.setValue(ps.get("slow_port_threshold", ps["port_threshold"]))
+        self.spin_ps_slow_syns.setValue(ps.get("slow_syn_threshold", ps["syn_threshold"]))
+        self.spin_ps_slow_window.setValue(ps.get("slow_window_sec", max(ps["window_sec"], 120)))
         self.spin_ps_block.setValue(ps["block_seconds"])
 
         bf = c["bruteforce"]
@@ -753,6 +821,7 @@ class MainWindow(QMainWindow):
 
         sp = c["spoof"]
         self.chk_arp_watch.setChecked(sp.get("arp_watch", True))
+        self.chk_gateway_auto_whitelist.setChecked(sp.get("gateway_auto_whitelist", True))
         self.chk_whitelist_host.setChecked(sp.get("whitelist_host", False))
         self.host_ip_edit.setText(sp.get("host_ip", ""))
         self.spin_sp_arp_cooldown.setValue(sp.get("arp_alert_cooldown", 30))
@@ -798,6 +867,9 @@ class MainWindow(QMainWindow):
         c["portscan"]["port_threshold"] = self.spin_ps_ports.value()
         c["portscan"]["syn_threshold"] = self.spin_ps_syns.value()
         c["portscan"]["window_sec"] = self.spin_ps_window.value()
+        c["portscan"]["slow_port_threshold"] = self.spin_ps_slow_ports.value()
+        c["portscan"]["slow_syn_threshold"] = self.spin_ps_slow_syns.value()
+        c["portscan"]["slow_window_sec"] = self.spin_ps_slow_window.value()
         c["portscan"]["block_seconds"] = self.spin_ps_block.value()
 
         c["bruteforce"]["threshold"] = self.spin_bf_threshold.value()
@@ -808,6 +880,7 @@ class MainWindow(QMainWindow):
         c["dos"]["block_seconds"] = self.spin_dos_block.value()
 
         c["spoof"]["arp_watch"] = self.chk_arp_watch.isChecked()
+        c["spoof"]["gateway_auto_whitelist"] = self.chk_gateway_auto_whitelist.isChecked()
         c["spoof"]["whitelist_host"] = self.chk_whitelist_host.isChecked()
         c["spoof"]["host_ip"] = self.host_ip_edit.text().strip()
         c["spoof"]["arp_alert_cooldown"] = self.spin_sp_arp_cooldown.value()
@@ -923,6 +996,8 @@ class MainWindow(QMainWindow):
                 mod._blocked_macs.clear()
         portscan.seen_ports.clear()
         portscan.seen_syns.clear()
+        portscan.slow_seen_ports.clear()
+        portscan.slow_seen_syns.clear()
         bruteforce.failures.clear()
         spoof.arp_table.clear()
         spoof.arp_cooldowns.clear()
