@@ -216,8 +216,9 @@ class MainWindow(QMainWindow):
         self.worker = None
         self._alert_count = 0
         self._block_count = 0
+        self._dismissed_macs = set()
 
-        self.setWindowTitle("NIDS — Network Intrusion Detection System")
+        self.setWindowTitle("Network Intrusion Detection System")
         self.setMinimumSize(960, 640)
         self.setStyleSheet(DARK_STYLE)
 
@@ -569,11 +570,8 @@ class MainWindow(QMainWindow):
         bl_lay.addWidget(self.mac_bl_list)
 
         bl_btns = QHBoxLayout()
-        bl_add = QPushButton("Add MAC")
-        bl_add.clicked.connect(lambda: self._add_mac(self.mac_bl_list))
         bl_rm = QPushButton("Remove Selected")
         bl_rm.clicked.connect(lambda: self._rm_mac(self.mac_bl_list))
-        bl_btns.addWidget(bl_add)
         bl_btns.addWidget(bl_rm)
         bl_btns.addStretch()
         bl_lay.addLayout(bl_btns)
@@ -587,11 +585,8 @@ class MainWindow(QMainWindow):
         wl_lay.addWidget(self.mac_wl_list)
 
         wl_btns = QHBoxLayout()
-        wl_add = QPushButton("Add MAC")
-        wl_add.clicked.connect(lambda: self._add_mac(self.mac_wl_list))
         wl_rm = QPushButton("Remove Selected")
         wl_rm.clicked.connect(lambda: self._rm_mac(self.mac_wl_list))
-        wl_btns.addWidget(wl_add)
         wl_btns.addWidget(wl_rm)
         wl_btns.addStretch()
         wl_lay.addLayout(wl_btns)
@@ -622,7 +617,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         lay.addWidget(title)
 
-        subtitle = QLabel("Network Intrusion Detection System")
+        subtitle = QLabel("Network Intrusion Detection System\nv1.1")
         subtitle.setStyleSheet("font-size: 15px; color: #c9d1d9;")
         subtitle.setAlignment(Qt.AlignCenter)
         lay.addWidget(subtitle)
@@ -729,15 +724,19 @@ class MainWindow(QMainWindow):
         mac, row = self._get_selected_detected_mac()
         if mac is None:
             return
+        self._dismissed_macs.add(mac.upper())
         self.mac_det_list.takeItem(row)
-        self._save_config_from_ui()
-        self.statusBar().showMessage(f"MAC {mac} dismissed", 3000)
+        self.statusBar().showMessage(f"MAC {mac} dismissed (still in config, hidden until restart or new detection)", 3000)
 
     def _refresh_detected(self):
-        """Reload detected MACs from config (picks up runtime detections)."""
+        """Reload detected MACs from config (picks up runtime detections).
+        Dismissed MACs are hidden until a new detection un-dismisses them."""
         cfg = load_config()
         self.mac_det_list.clear()
         for entry in cfg["macfilter"].get("detected_macs", []):
+            mac = entry["mac"].upper() if isinstance(entry, dict) else str(entry).upper()
+            if mac in self._dismissed_macs:
+                continue
             if isinstance(entry, dict):
                 self._add_detected_row(
                     entry["mac"],
@@ -1016,6 +1015,10 @@ class MainWindow(QMainWindow):
             self._block_count += 1
             self.block_label.setText(f"Blocks: {self._block_count}")
         if "added to detected list for review" in line:
+            import re
+            m = re.search(r"MAC\s+([\dA-Fa-f:]+)\s+added", line)
+            if m:
+                self._dismissed_macs.discard(m.group(1).upper())
             self._refresh_detected()
 
     def _on_stopped(self):

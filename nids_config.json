@@ -40,13 +40,7 @@
     "mode": "whitelist",
     "allowed_macs": [],
     "blocked_macs": [],
-    "detected_macs": [
-      {
-        "mac": "00:0C:29:AD:13:B7",
-        "last_ip": "192.168.92.129",
-        "first_seen": "2026-04-04 06:54:04"
-      }
-    ]
+    "detected_macs": []
   },
   "logging": {
     "log_dir": "/home/kali/Desktop/nids_edit_metasploit/logs",

@@ -1,8 +1,8 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=NIDS (Metasploit lab)
-Comment=Network Intrusion Detection System — lab bundle with Metasploit demos
+Name=NIDS
+Comment=Network Intrusion Detection System
 Exec=/home/kali/Desktop/nids_edit_metasploit/nids.sh
 Icon=security-high
 Terminal=false

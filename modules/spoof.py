@@ -229,7 +229,7 @@ def run_detector(cfg, stop_event=None):
             for _, rcv in ans:
                 gw_mac = rcv[Ether].src.upper()
                 arp_table[_gateway_ip] = gw_mac
-                _emit(f"[INFO] Gateway MAC baseline: {_gateway_ip} = {gw_mac}")
+                _emit(f"[INFO] Gateway MAC: {gw_mac}")
                 break
         except Exception:
             pass
@@ -241,16 +241,7 @@ def run_detector(cfg, stop_event=None):
     ensure_chain(CHAIN)
     flush_chain(CHAIN)
 
-    _emit(f"[START] Spoof detector on {iface} (IP: {_defense_ip}, subnet: {_local_net})")
-    if _gateway_ip and cfg["spoof"].get("gateway_auto_whitelist", True):
-        _emit(f"[INFO] Gateway {_gateway_ip} auto-whitelisted")
-    elif _gateway_ip:
-        _emit(f"[INFO] Gateway auto-whitelist disabled for {_gateway_ip}")
-    if cfg["spoof"].get("whitelist_host") and cfg["spoof"].get("host_ip", "").strip():
-        _emit(f"[INFO] Host machine {cfg['spoof']['host_ip'].strip()} whitelisted")
-    _emit(f"[INFO] ARP watch: {cfg['spoof'].get('arp_watch', True)}, "
-          f"TTL deviation threshold: {cfg['spoof'].get('ttl_deviation', 15)}, "
-          f"blocks persist until NIDS stops")
+    _emit(f"[START] Spoof detector on {iface} (IP: {_defense_ip})")
 
     try:
         while stop_event is None or not stop_event.is_set():

@@ -142,13 +142,7 @@ def run_detector(cfg, stop_event=None):
          "--name", "nids_ps", "--rcheck", "--seconds", str(window),
          "--hitcount", str(syn_thr), "-j", "DROP"])
 
-    _emit(
-        f"[START] Port-scan detector on {iface} (IP: {_defense_ip}) "
-        f"fast={cfg['portscan']['port_threshold']} ports/{cfg['portscan']['syn_threshold']} SYNs/{cfg['portscan']['window_sec']}s "
-        f"slow={cfg['portscan'].get('slow_port_threshold', cfg['portscan']['port_threshold'])} ports/"
-        f"{cfg['portscan'].get('slow_syn_threshold', cfg['portscan']['syn_threshold'])} SYNs/"
-        f"{cfg['portscan'].get('slow_window_sec', cfg['portscan']['window_sec'])}s"
-    )
+    _emit(f"[START] Port-scan detector on {iface} (IP: {_defense_ip})")
 
     try:
         while stop_event is None or not stop_event.is_set():
