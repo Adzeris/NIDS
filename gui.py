@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QTabWidget, QTextEdit, QPushButton, QLabel, QLineEdit,
     QCheckBox, QGroupBox, QFormLayout, QComboBox, QSpinBox,
-    QPlainTextEdit, QSplitter, QFrame, QMessageBox, QListWidget,
+    QPlainTextEdit, QFrame, QMessageBox, QListWidget,
     QListWidgetItem, QInputDialog, QStatusBar, QAction, QMenuBar,
     QScrollArea, QToolButton,
 )
@@ -358,40 +358,41 @@ class MainWindow(QMainWindow):
     def _build_live_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-
-        splitter = QSplitter(Qt.Vertical)
+        lay.setSpacing(14)
+        lay.setContentsMargins(0, 6, 0, 0)
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.document().setMaximumBlockCount(5000)
-        splitter.addWidget(self.log_view)
+        self.log_view.setMinimumHeight(320)
+        lay.addWidget(self.log_view, stretch=1)
 
         blocks_grp = QGroupBox("Active Blocks")
         blocks_lay = QVBoxLayout(blocks_grp)
-        blocks_lay.setContentsMargins(6, 14, 6, 6)
-        blocks_lay.setSpacing(4)
+        blocks_lay.setContentsMargins(12, 18, 12, 12)
+        blocks_lay.setSpacing(8)
         self.blocks_list = QListWidget()
-        self.blocks_list.setMaximumHeight(120)
+        self.blocks_list.setFixedHeight(72)
+        self.blocks_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.blocks_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         blocks_lay.addWidget(self.blocks_list)
         unblock_row = QHBoxLayout()
-        unblock_row.setSpacing(6)
+        unblock_row.setSpacing(10)
         unblock_sel_btn = QPushButton("Unblock")
         unblock_sel_btn.clicked.connect(self._unblock_selected)
         refresh_blocks_btn = QPushButton("Refresh")
         refresh_blocks_btn.clicked.connect(self._rebuild_blocks_from_firewall)
-        unblock_sel_btn.setStyleSheet("padding: 6px 12px;")
-        refresh_blocks_btn.setStyleSheet("padding: 6px 12px;")
+        unblock_sel_btn.setStyleSheet("padding: 8px 14px;")
+        refresh_blocks_btn.setStyleSheet("padding: 8px 14px;")
         unblock_row.addWidget(unblock_sel_btn)
         unblock_row.addWidget(refresh_blocks_btn)
         unblock_row.addStretch()
         blocks_lay.addLayout(unblock_row)
-        splitter.addWidget(blocks_grp)
-
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        lay.addWidget(splitter)
+        lay.addWidget(blocks_grp, stretch=0)
 
         btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        btn_row.setContentsMargins(0, 4, 0, 0)
         clear_btn = QPushButton("Clear Log")
         clear_btn.clicked.connect(self.log_view.clear)
         export_btn = QPushButton("Export Logs")

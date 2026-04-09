@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Install NIDS
+Comment=Double-click to install NIDS and add it to your app menu
+Exec=bash -c 'cd "$(dirname "%k")" && ./install_desktop.sh'
+Terminal=true
+Categories=Utility;
+Icon=system-software-install
