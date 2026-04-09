@@ -5,6 +5,11 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Icon must be world-readable or the desktop session cannot load it (shows generic gear).
+if [ -f "$SCRIPT_DIR/icons/nids.png" ]; then
+    chmod a+r "$SCRIPT_DIR/icons/nids.png" 2>/dev/null || true
+fi
+
 if [ "$EUID" -ne 0 ]; then
     # Re-launch with pkexec (graphical sudo prompt) or sudo
     if command -v pkexec &>/dev/null; then

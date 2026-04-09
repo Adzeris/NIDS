@@ -12,6 +12,7 @@ import sys
 import os
 import time
 import json
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -42,26 +43,58 @@ class NIDSEngine:
         self.threads = {}
         self._lock = threading.Lock()
         self._log_lines = []
+        self._structured_records = []
 
         log_dir = self.cfg["logging"]["log_dir"]
         os.makedirs(log_dir, exist_ok=True)
         self._log_file = None
+        self._jsonl_file = None
         if self.cfg["logging"]["log_to_file"]:
-            path = os.path.join(log_dir, f"nids_{time.strftime('%Y%m%d_%H%M%S')}.log")
-            self._log_file = open(path, "a")
+            stamp = time.strftime('%Y%m%d_%H%M%S')
+            self._log_file = open(os.path.join(log_dir, f"nids_{stamp}.log"), "a")
+            self._jsonl_file = open(os.path.join(log_dir, f"nids_{stamp}.jsonl"), "a")
 
     def _default_log(self, msg):
         print(msg, flush=True)
 
+    _TAG_RE = re.compile(r'\[(\w+)\]')
+    _IP_RE = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
+    _MAC_RE = re.compile(r'([\dA-Fa-f]{2}(?::[\dA-Fa-f]{2}){5})')
+
+    def _parse_structured(self, msg):
+        tag_m = self._TAG_RE.search(msg)
+        event_type = tag_m.group(1) if tag_m else "INFO"
+        ip_m = self._IP_RE.search(msg)
+        mac_m = self._MAC_RE.search(msg)
+        action = "alert" if event_type == "ALERT" else (
+            "block" if event_type == "BLOCK" else (
+            "unblock" if event_type == "UNBLOCK" else "info"))
+        return {
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "event_type": event_type,
+            "source_ip": ip_m.group(1) if ip_m else None,
+            "source_mac": mac_m.group(1).upper() if mac_m else None,
+            "action": action,
+            "message": msg,
+        }
+
     def _log(self, msg):
+        record = self._parse_structured(msg)
         with self._lock:
             if self._shutdown_complete:
                 return
             self._log_lines.append(msg)
+            self._structured_records.append(record)
             if self._log_file:
                 try:
                     self._log_file.write(msg + "\n")
                     self._log_file.flush()
+                except (ValueError, OSError):
+                    pass
+            if self._jsonl_file:
+                try:
+                    self._jsonl_file.write(json.dumps(record) + "\n")
+                    self._jsonl_file.flush()
                 except (ValueError, OSError):
                     pass
         try:
@@ -72,6 +105,18 @@ class NIDSEngine:
     def get_log_lines(self):
         with self._lock:
             return list(self._log_lines)
+
+    def get_structured_records(self):
+        with self._lock:
+            return list(self._structured_records)
+
+    def get_module_stats(self):
+        """Collect lightweight stats from each detector module."""
+        result = {}
+        for name, mod in DETECTORS.items():
+            if hasattr(mod, 'stats'):
+                result[name] = dict(mod.stats)
+        return result
 
     def start(self):
         """Start all enabled modules in background threads."""
@@ -117,12 +162,14 @@ class NIDSEngine:
 
         with self._lock:
             self._shutdown_complete = True
-            if self._log_file:
-                try:
-                    self._log_file.close()
-                except (ValueError, OSError):
-                    pass
-                self._log_file = None
+            for f in (self._log_file, self._jsonl_file):
+                if f:
+                    try:
+                        f.close()
+                    except (ValueError, OSError):
+                        pass
+            self._log_file = None
+            self._jsonl_file = None
 
     def flush_dns(self):
         """Flush system DNS cache. Tries all known Linux resolvers."""

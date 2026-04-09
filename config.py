@@ -27,6 +27,9 @@ DEFAULTS = {
         "slow_window_sec": 120,
         "slow_port_threshold": 6,
         "slow_syn_threshold": 6,
+        "udp_port_threshold": 8,
+        "udp_probe_threshold": 12,
+        "udp_window_sec": 10,
         "block_seconds": 120,
     },
 
@@ -34,6 +37,8 @@ DEFAULTS = {
         "threshold": 5,
         "window_sec": 60,
         "block_seconds": 120,
+        "ftp_threshold": 5,
+        "ftp_window_sec": 60,
     },
 
     "dos": {
@@ -49,6 +54,9 @@ DEFAULTS = {
         "arp_alert_cooldown": 60,
         "ttl_deviation": 20,
         "ttl_min_samples": 20,
+        "ttl_alert_cooldown": 120,
+        "ttl_max_alerts_per_source": 3,
+        "ttl_local_only": True,
         "block_seconds": 120,
         "whitelist_ips": [],
     },

@@ -18,11 +18,13 @@ from PyQt5.QtWidgets import (
     QListWidgetItem, QInputDialog, QStatusBar, QAction, QMenuBar,
     QScrollArea, QToolButton,
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF
+from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette, QPainter, QPen, QBrush
 
 from config import load_config, save_config
 from engine import NIDSEngine
+
+APP_VERSION = "2.1"
 
 _MAC_MODE_UI_TO_CFG = {"Allow Only": "whitelist", "Block Only": "blacklist"}
 _MAC_MODE_CFG_TO_UI = {v: k for k, v in _MAC_MODE_UI_TO_CFG.items()}
@@ -70,6 +72,58 @@ class ClickFocusSpinBox(QSpinBox):
             super().wheelEvent(event)
         else:
             event.ignore()
+
+
+class EventRateWidget(QWidget):
+    """Lightweight bar chart showing events-per-second over a rolling window."""
+
+    def __init__(self, window_sec=60, parent=None):
+        super().__init__(parent)
+        self._window = window_sec
+        self._buckets = [0] * window_sec
+        self._peak = 1
+        self.setFixedHeight(48)
+        self.setMinimumWidth(200)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(1000)
+
+    def record_event(self):
+        self._buckets[-1] += 1
+
+    def _tick(self):
+        self._buckets.append(0)
+        if len(self._buckets) > self._window:
+            self._buckets = self._buckets[-self._window:]
+        m = max(self._buckets) if self._buckets else 1
+        self._peak = max(m, 1)
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor("#010409"))
+
+        n = len(self._buckets)
+        if n == 0:
+            p.end()
+            return
+
+        bar_w = max(w / n, 1)
+        for i, val in enumerate(self._buckets):
+            ratio = val / self._peak
+            bar_h = max(int(ratio * (h - 14)), 1) if val > 0 else 0
+            x = int(i * bar_w)
+            color = QColor("#39d353") if val < self._peak * 0.7 else QColor("#f0883e") if val < self._peak * 0.9 else QColor("#da3633")
+            p.fillRect(x, h - bar_h, max(int(bar_w) - 1, 1), bar_h, color)
+
+        current = self._buckets[-1] if self._buckets else 0
+        p.setPen(QColor("#8b949e"))
+        p.setFont(QFont("sans-serif", 8))
+        p.drawText(4, 10, f"Events/sec: {current}  peak: {self._peak}")
+        p.end()
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +272,7 @@ class MainWindow(QMainWindow):
         self._block_count = 0
         self._dismissed_macs = set()
 
-        self.setWindowTitle("Network Intrusion Detection System")
+        self.setWindowTitle(f"Network Intrusion Detection System — v{APP_VERSION}")
         self.setMinimumSize(960, 640)
         self.setStyleSheet(DARK_STYLE)
 
@@ -305,17 +359,49 @@ class MainWindow(QMainWindow):
         w = QWidget()
         lay = QVBoxLayout(w)
 
-        self.log_view = QPlainTextEdit()
+        splitter = QSplitter(Qt.Vertical)
+
+        self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
-        self.log_view.setMaximumBlockCount(5000)
-        lay.addWidget(self.log_view)
+        self.log_view.document().setMaximumBlockCount(5000)
+        splitter.addWidget(self.log_view)
+
+        blocks_grp = QGroupBox("Active Blocks")
+        blocks_lay = QVBoxLayout(blocks_grp)
+        blocks_lay.setContentsMargins(6, 14, 6, 6)
+        blocks_lay.setSpacing(4)
+        self.blocks_list = QListWidget()
+        self.blocks_list.setMaximumHeight(120)
+        blocks_lay.addWidget(self.blocks_list)
+        unblock_row = QHBoxLayout()
+        unblock_row.setSpacing(6)
+        unblock_sel_btn = QPushButton("Unblock")
+        unblock_sel_btn.clicked.connect(self._unblock_selected)
+        refresh_blocks_btn = QPushButton("Refresh")
+        refresh_blocks_btn.clicked.connect(self._rebuild_blocks_from_firewall)
+        unblock_sel_btn.setStyleSheet("padding: 6px 12px;")
+        refresh_blocks_btn.setStyleSheet("padding: 6px 12px;")
+        unblock_row.addWidget(unblock_sel_btn)
+        unblock_row.addWidget(refresh_blocks_btn)
+        unblock_row.addStretch()
+        blocks_lay.addLayout(unblock_row)
+        splitter.addWidget(blocks_grp)
+
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+        lay.addWidget(splitter)
 
         btn_row = QHBoxLayout()
         clear_btn = QPushButton("Clear Log")
         clear_btn.clicked.connect(self.log_view.clear)
+        export_btn = QPushButton("Export Logs")
+        export_btn.clicked.connect(self._export_logs)
+        btn_row.addWidget(export_btn)
         btn_row.addStretch()
         btn_row.addWidget(clear_btn)
         lay.addLayout(btn_row)
+
+        self._rebuild_blocks_from_firewall()
 
         return w
 
@@ -412,6 +498,19 @@ class MainWindow(QMainWindow):
         ps_lay.addRow("Slow unique ports:", self.spin_ps_slow_ports)
         ps_lay.addRow("Slow SYN count:", self.spin_ps_slow_syns)
         ps_lay.addRow("Slow window (sec):", self.spin_ps_slow_window)
+
+        udp_sep = QLabel("UDP Scan Detection")
+        udp_sep.setStyleSheet("color: #58a6ff; font-weight: bold; margin-top: 8px;")
+        ps_lay.addRow(udp_sep)
+        self.spin_ps_udp_ports = ClickFocusSpinBox(); self.spin_ps_udp_ports.setRange(1, 9999)
+        self.spin_ps_udp_probes = ClickFocusSpinBox(); self.spin_ps_udp_probes.setRange(1, 9999)
+        self.spin_ps_udp_window = ClickFocusSpinBox(); self.spin_ps_udp_window.setRange(1, 600)
+        for sp in [self.spin_ps_udp_ports, self.spin_ps_udp_probes, self.spin_ps_udp_window]:
+            sp.setMinimumHeight(30)
+        ps_lay.addRow("UDP unique ports:", self.spin_ps_udp_ports)
+        ps_lay.addRow("UDP probe count:", self.spin_ps_udp_probes)
+        ps_lay.addRow("UDP window (sec):", self.spin_ps_udp_window)
+
         ps_lay.addRow("Block duration (sec):", self.spin_ps_block)
         advanced_content_lay.addWidget(ps_grp)
 
@@ -422,13 +521,28 @@ class MainWindow(QMainWindow):
         bf_lay.setHorizontalSpacing(20)
         bf_lay.setContentsMargins(14, 20, 14, 14)
 
+        ssh_label = QLabel("SSH")
+        ssh_label.setStyleSheet("color: #58a6ff; font-weight: bold;")
+        bf_lay.addRow(ssh_label)
         self.spin_bf_threshold = ClickFocusSpinBox(); self.spin_bf_threshold.setRange(1, 999)
         self.spin_bf_window = ClickFocusSpinBox(); self.spin_bf_window.setRange(1, 600)
-        self.spin_bf_block = ClickFocusSpinBox(); self.spin_bf_block.setRange(1, 9999)
-        for sp in [self.spin_bf_threshold, self.spin_bf_window, self.spin_bf_block]:
+        for sp in [self.spin_bf_threshold, self.spin_bf_window]:
             sp.setMinimumHeight(30)
-        bf_lay.addRow("Failed attempts:", self.spin_bf_threshold)
-        bf_lay.addRow("Window (sec):", self.spin_bf_window)
+        bf_lay.addRow("SSH failed attempts:", self.spin_bf_threshold)
+        bf_lay.addRow("SSH window (sec):", self.spin_bf_window)
+
+        ftp_label = QLabel("FTP")
+        ftp_label.setStyleSheet("color: #58a6ff; font-weight: bold; margin-top: 8px;")
+        bf_lay.addRow(ftp_label)
+        self.spin_bf_ftp_threshold = ClickFocusSpinBox(); self.spin_bf_ftp_threshold.setRange(1, 999)
+        self.spin_bf_ftp_window = ClickFocusSpinBox(); self.spin_bf_ftp_window.setRange(1, 600)
+        for sp in [self.spin_bf_ftp_threshold, self.spin_bf_ftp_window]:
+            sp.setMinimumHeight(30)
+        bf_lay.addRow("FTP failed attempts:", self.spin_bf_ftp_threshold)
+        bf_lay.addRow("FTP window (sec):", self.spin_bf_ftp_window)
+
+        self.spin_bf_block = ClickFocusSpinBox(); self.spin_bf_block.setRange(1, 9999)
+        self.spin_bf_block.setMinimumHeight(30)
         bf_lay.addRow("Block duration (sec):", self.spin_bf_block)
         advanced_content_lay.addWidget(bf_grp)
 
@@ -460,13 +574,20 @@ class MainWindow(QMainWindow):
         self.spin_sp_arp_cooldown = ClickFocusSpinBox(); self.spin_sp_arp_cooldown.setRange(1, 600)
         self.spin_sp_ttl_dev = ClickFocusSpinBox(); self.spin_sp_ttl_dev.setRange(1, 128)
         self.spin_sp_ttl_samples = ClickFocusSpinBox(); self.spin_sp_ttl_samples.setRange(2, 200)
+        self.spin_sp_ttl_cooldown = ClickFocusSpinBox(); self.spin_sp_ttl_cooldown.setRange(1, 3600)
+        self.spin_sp_ttl_max_alerts = ClickFocusSpinBox(); self.spin_sp_ttl_max_alerts.setRange(1, 100)
+        self.chk_ttl_local_only = QCheckBox("TTL checks local subnet only (recommended)")
         self.spin_sp_block = ClickFocusSpinBox(); self.spin_sp_block.setRange(1, 9999)
         for sp in [self.spin_sp_arp_cooldown, self.spin_sp_ttl_dev,
-                   self.spin_sp_ttl_samples, self.spin_sp_block]:
+                   self.spin_sp_ttl_samples, self.spin_sp_ttl_cooldown,
+                   self.spin_sp_ttl_max_alerts, self.spin_sp_block]:
             sp.setMinimumHeight(30)
         sp_lay.addRow("ARP alert cooldown (sec):", self.spin_sp_arp_cooldown)
         sp_lay.addRow("TTL deviation threshold:", self.spin_sp_ttl_dev)
         sp_lay.addRow("TTL min samples:", self.spin_sp_ttl_samples)
+        sp_lay.addRow("TTL alert cooldown (sec):", self.spin_sp_ttl_cooldown)
+        sp_lay.addRow("TTL max alerts per source:", self.spin_sp_ttl_max_alerts)
+        sp_lay.addRow(self.chk_ttl_local_only)
         sp_lay.addRow("Block duration (sec):", self.spin_sp_block)
 
         wl_hint = QLabel("Whitelist / exception settings")
@@ -617,7 +738,7 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         lay.addWidget(title)
 
-        subtitle = QLabel("Network Intrusion Detection System\nv1.1")
+        subtitle = QLabel(f"Network Intrusion Detection System\nv{APP_VERSION}")
         subtitle.setStyleSheet("font-size: 15px; color: #c9d1d9;")
         subtitle.setAlignment(Qt.AlignCenter)
         lay.addWidget(subtitle)
@@ -773,7 +894,9 @@ class MainWindow(QMainWindow):
             list_widget.takeItem(list_widget.row(item))
             if list_widget is self.mac_bl_list:
                 unblock_mac("NIDS_MACFILTER", mac)
-                self.statusBar().showMessage(f"MAC {mac} unblocked", 3000)
+                self._add_detected_row(mac)
+                self._save_config_from_ui()
+                self.statusBar().showMessage(f"MAC {mac} unblocked — moved to Detected", 3000)
             elif list_widget is self.mac_wl_list:
                 self._add_detected_row(mac)
                 self._save_config_from_ui()
@@ -807,11 +930,16 @@ class MainWindow(QMainWindow):
         self.spin_ps_slow_ports.setValue(ps.get("slow_port_threshold", ps["port_threshold"]))
         self.spin_ps_slow_syns.setValue(ps.get("slow_syn_threshold", ps["syn_threshold"]))
         self.spin_ps_slow_window.setValue(ps.get("slow_window_sec", max(ps["window_sec"], 120)))
+        self.spin_ps_udp_ports.setValue(ps.get("udp_port_threshold", 8))
+        self.spin_ps_udp_probes.setValue(ps.get("udp_probe_threshold", 12))
+        self.spin_ps_udp_window.setValue(ps.get("udp_window_sec", 10))
         self.spin_ps_block.setValue(ps["block_seconds"])
 
         bf = c["bruteforce"]
         self.spin_bf_threshold.setValue(bf["threshold"])
         self.spin_bf_window.setValue(bf["window_sec"])
+        self.spin_bf_ftp_threshold.setValue(bf.get("ftp_threshold", 5))
+        self.spin_bf_ftp_window.setValue(bf.get("ftp_window_sec", 60))
         self.spin_bf_block.setValue(bf["block_seconds"])
 
         d = c["dos"]
@@ -826,6 +954,9 @@ class MainWindow(QMainWindow):
         self.spin_sp_arp_cooldown.setValue(sp.get("arp_alert_cooldown", 30))
         self.spin_sp_ttl_dev.setValue(sp.get("ttl_deviation", 15))
         self.spin_sp_ttl_samples.setValue(sp.get("ttl_min_samples", 10))
+        self.spin_sp_ttl_cooldown.setValue(sp.get("ttl_alert_cooldown", 120))
+        self.spin_sp_ttl_max_alerts.setValue(sp.get("ttl_max_alerts_per_source", 3))
+        self.chk_ttl_local_only.setChecked(sp.get("ttl_local_only", True))
         self.spin_sp_block.setValue(sp.get("block_seconds", 120))
         self.spoof_wl_list.clear()
         for ip in sp.get("whitelist_ips", []):
@@ -869,10 +1000,15 @@ class MainWindow(QMainWindow):
         c["portscan"]["slow_port_threshold"] = self.spin_ps_slow_ports.value()
         c["portscan"]["slow_syn_threshold"] = self.spin_ps_slow_syns.value()
         c["portscan"]["slow_window_sec"] = self.spin_ps_slow_window.value()
+        c["portscan"]["udp_port_threshold"] = self.spin_ps_udp_ports.value()
+        c["portscan"]["udp_probe_threshold"] = self.spin_ps_udp_probes.value()
+        c["portscan"]["udp_window_sec"] = self.spin_ps_udp_window.value()
         c["portscan"]["block_seconds"] = self.spin_ps_block.value()
 
         c["bruteforce"]["threshold"] = self.spin_bf_threshold.value()
         c["bruteforce"]["window_sec"] = self.spin_bf_window.value()
+        c["bruteforce"]["ftp_threshold"] = self.spin_bf_ftp_threshold.value()
+        c["bruteforce"]["ftp_window_sec"] = self.spin_bf_ftp_window.value()
         c["bruteforce"]["block_seconds"] = self.spin_bf_block.value()
 
         c["dos"]["threshold_pps"] = self.spin_dos_pps.value()
@@ -885,6 +1021,9 @@ class MainWindow(QMainWindow):
         c["spoof"]["arp_alert_cooldown"] = self.spin_sp_arp_cooldown.value()
         c["spoof"]["ttl_deviation"] = self.spin_sp_ttl_dev.value()
         c["spoof"]["ttl_min_samples"] = self.spin_sp_ttl_samples.value()
+        c["spoof"]["ttl_alert_cooldown"] = self.spin_sp_ttl_cooldown.value()
+        c["spoof"]["ttl_max_alerts_per_source"] = self.spin_sp_ttl_max_alerts.value()
+        c["spoof"]["ttl_local_only"] = self.chk_ttl_local_only.isChecked()
         c["spoof"]["block_seconds"] = self.spin_sp_block.value()
         c["spoof"]["whitelist_ips"] = [
             self.spoof_wl_list.item(i).text()
@@ -950,6 +1089,7 @@ class MainWindow(QMainWindow):
         self.worker.log_signal.connect(self._on_log_line)
         self.worker.stopped_signal.connect(self._on_stopped)
         self.worker.start()
+        QTimer.singleShot(1500, self._rebuild_blocks_from_firewall)
 
     def _stop(self):
         if self.worker:
@@ -996,29 +1136,239 @@ class MainWindow(QMainWindow):
         portscan.seen_syns.clear()
         portscan.slow_seen_ports.clear()
         portscan.slow_seen_syns.clear()
-        bruteforce.failures.clear()
+        portscan.udp_seen_ports.clear()
+        portscan.udp_seen_probes.clear()
+        bruteforce.failures_ssh.clear()
+        bruteforce.failures_ftp.clear()
+        gw_ip = spoof._gateway_ip
+        gw_mac = spoof.arp_table.get(gw_ip) if gw_ip else None
         spoof.arp_table.clear()
+        if gw_ip and gw_mac:
+            spoof.arp_table[gw_ip] = gw_mac
         spoof.arp_cooldowns.clear()
         spoof.ttl_alert_cooldowns.clear()
+        spoof.ttl_alert_counts.clear()
         spoof.blocked_macs.clear()
 
         self.statusBar().showMessage("All blocks cleared + DNS flushed", 3000)
 
-    def _on_log_line(self, line):
-        self.log_view.appendPlainText(line)
+    _LOG_COLORS = {
+        "ALERT":   "#f0883e",
+        "BLOCK":   "#da3633",
+        "UNBLOCK": "#39d353",
+        "INFO":    "#8b949e",
+        "START":   "#58a6ff",
+        "STOP":    "#58a6ff",
+        "ENGINE":  "#58a6ff",
+        "WARN":    "#d29922",
+        "ERROR":   "#ff7b72",
+    }
 
-        if "[ALERT]" in line:
+    def _on_log_line(self, line):
+        import re as _re
+        tag_m = _re.search(r'\[(\w+)\]', line)
+        tag = tag_m.group(1) if tag_m else "INFO"
+        color = self._LOG_COLORS.get(tag, "#c9d1d9")
+
+        cursor = self.log_view.textCursor()
+        cursor.movePosition(cursor.End)
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        cursor.insertText(line + "\n", fmt)
+        self.log_view.setTextCursor(cursor)
+        self.log_view.ensureCursorVisible()
+
+        if tag == "ALERT":
             self._alert_count += 1
             self.alert_label.setText(f"Alerts: {self._alert_count}")
-        if "[BLOCK]" in line:
+        if tag == "BLOCK":
             self._block_count += 1
             self.block_label.setText(f"Blocks: {self._block_count}")
+            self._add_active_block(line)
+        if tag == "UNBLOCK":
+            self._remove_active_block(line)
         if "added to detected list for review" in line:
-            import re
-            m = re.search(r"MAC\s+([\dA-Fa-f:]+)\s+added", line)
+            m = _re.search(r"MAC\s+([\dA-Fa-f:]+)\s+added", line)
             if m:
                 self._dismissed_macs.discard(m.group(1).upper())
             self._refresh_detected()
+        if "All blocks cleared" in line:
+            self.blocks_list.clear()
+
+    _CHAIN_HINTS = {
+        "port scan": "NIDS_PORTSCAN",
+        "Port scan": "NIDS_PORTSCAN",
+        "Slow": "NIDS_PORTSCAN",
+        "Brute force": "NIDS_BRUTEFORCE",
+        "DoS": "NIDS_DOS",
+        "flood": "NIDS_DOS",
+        "spoof": "NIDS_SPOOF",
+        "bogon": "NIDS_SPOOF",
+        "ARP": "NIDS_SPOOF",
+        "MAC": "NIDS_MACFILTER",
+        "dropped via NIDS_MACFILTER": "NIDS_MACFILTER",
+        "dropped via NIDS_SPOOF": "NIDS_SPOOF",
+    }
+
+    def _infer_chain(self, line):
+        for hint, chain in self._CHAIN_HINTS.items():
+            if hint in line:
+                return chain
+        return None
+
+    def _add_active_block(self, line):
+        import re as _re
+        ip_m = _re.search(r'Blocked\s+(\d+\.\d+\.\d+\.\d+)', line)
+        mac_m = _re.search(r'(?:Blocked.*MAC|MAC)\s+([\dA-Fa-f:]{17})', line, _re.IGNORECASE)
+        ts_str = time.strftime("%H:%M:%S")
+        chain = self._infer_chain(line)
+
+        if mac_m:
+            target = mac_m.group(1).upper()
+            label = f"MAC {target}  [{ts_str}]  {chain or ''}"
+            meta = {"type": "mac", "target": target, "chain": chain}
+        elif ip_m:
+            target = ip_m.group(1)
+            label = f"IP  {target}  [{ts_str}]  {chain or ''}"
+            meta = {"type": "ip", "target": target, "chain": chain}
+        else:
+            return
+        item = QListWidgetItem(label)
+        item.setData(Qt.UserRole, meta)
+        self.blocks_list.addItem(item)
+
+    def _remove_active_block(self, line):
+        import re as _re
+        ip_m = _re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
+        mac_m = _re.search(r'([\dA-Fa-f:]{17})', line, _re.IGNORECASE)
+        target = None
+        if mac_m:
+            target = mac_m.group(1).upper()
+        elif ip_m:
+            target = ip_m.group(1)
+        if not target:
+            return
+        for i in range(self.blocks_list.count() - 1, -1, -1):
+            meta = self.blocks_list.item(i).data(Qt.UserRole)
+            if meta and meta.get("target") == target:
+                self.blocks_list.takeItem(i)
+            elif target in self.blocks_list.item(i).text():
+                self.blocks_list.takeItem(i)
+
+    def _unblock_selected(self):
+        from modules.firewall import unblock_ip, unblock_mac
+        _IP_CHAINS = ["NIDS_PORTSCAN", "NIDS_BRUTEFORCE", "NIDS_DOS", "NIDS_SPOOF"]
+        _MAC_CHAINS = ["NIDS_SPOOF", "NIDS_MACFILTER"]
+
+        for item in self.blocks_list.selectedItems():
+            meta = item.data(Qt.UserRole)
+            if meta and meta.get("chain"):
+                chain = meta["chain"]
+                if meta["type"] == "ip":
+                    unblock_ip(chain, meta["target"])
+                else:
+                    unblock_mac(chain, meta["target"])
+                    from modules import arpnft
+                    arpnft.arp_unblock_mac(meta["target"])
+            elif meta:
+                if meta["type"] == "ip":
+                    for c in _IP_CHAINS:
+                        unblock_ip(c, meta["target"])
+                else:
+                    for c in _MAC_CHAINS:
+                        unblock_mac(c, meta["target"])
+                    from modules import arpnft
+                    arpnft.arp_unblock_mac(meta["target"])
+            self.blocks_list.takeItem(self.blocks_list.row(item))
+        self.statusBar().showMessage("Selected blocks removed", 3000)
+
+    def _rebuild_blocks_from_firewall(self):
+        """Populate Active Blocks panel from current iptables/nftables state."""
+        from modules.firewall import list_blocked_ips, list_blocked_macs
+        from modules import arpnft
+
+        self.blocks_list.clear()
+        chain_ip_map = {
+            "NIDS_PORTSCAN": "portscan",
+            "NIDS_BRUTEFORCE": "bruteforce",
+            "NIDS_DOS": "dos",
+            "NIDS_SPOOF": "spoof",
+        }
+        chain_mac_map = {
+            "NIDS_SPOOF": "spoof",
+            "NIDS_MACFILTER": "macfilter",
+        }
+        seen_ips = set()
+        for chain, module in chain_ip_map.items():
+            for ip in list_blocked_ips(chain):
+                key = (ip, chain)
+                if key in seen_ips:
+                    continue
+                seen_ips.add(key)
+                label = f"IP  {ip}  [{module}]  {chain}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, {"type": "ip", "target": ip, "chain": chain})
+                self.blocks_list.addItem(item)
+
+        seen_macs = set()
+        for chain, module in chain_mac_map.items():
+            for mac in list_blocked_macs(chain):
+                key = (mac, chain)
+                if key in seen_macs:
+                    continue
+                seen_macs.add(key)
+                label = f"MAC {mac}  [{module}]  {chain}"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, {"type": "mac", "target": mac, "chain": chain})
+                self.blocks_list.addItem(item)
+
+        for mac in arpnft.arp_list_blocked():
+            if not any(
+                (m.data(Qt.UserRole) or {}).get("target") == mac
+                for m in [self.blocks_list.item(i) for i in range(self.blocks_list.count())]
+            ):
+                label = f"MAC {mac}  [nftables]  netdev"
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, {"type": "mac", "target": mac, "chain": None})
+                self.blocks_list.addItem(item)
+
+        count = self.blocks_list.count()
+        if count:
+            self.statusBar().showMessage(f"Active Blocks: {count} rules loaded from firewall", 3000)
+
+    def _export_logs(self):
+        import csv, json
+        from PyQt5.QtWidgets import QFileDialog
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Logs", f"nids_export_{time.strftime('%Y%m%d_%H%M%S')}",
+            "JSON (*.json);;CSV (*.csv);;All Files (*)"
+        )
+        if not path:
+            return
+
+        records = []
+        if self.worker and self.worker.engine:
+            records = self.worker.engine.get_structured_records()
+
+        if not records:
+            self.statusBar().showMessage("No session data to export", 3000)
+            return
+
+        fields = ["timestamp", "event_type", "source_ip", "source_mac", "action", "message"]
+        try:
+            if path.endswith(".csv"):
+                with open(path, "w", newline="") as f:
+                    w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+                    w.writeheader()
+                    w.writerows(records)
+            else:
+                if not path.endswith(".json"):
+                    path += ".json"
+                with open(path, "w") as f:
+                    json.dump(records, f, indent=2)
+            self.statusBar().showMessage(f"Exported {len(records)} entries to {path}", 5000)
+        except Exception as e:
+            self.statusBar().showMessage(f"Export failed: {e}", 5000)
 
     def _on_stopped(self):
         self.start_btn.setEnabled(True)
@@ -1043,6 +1393,14 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("NIDS")
+    app.setApplicationVersion(APP_VERSION)
+    _icon = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icons", "nids.png")
+    if os.path.isfile(_icon):
+        try:
+            os.chmod(_icon, 0o644)
+        except OSError:
+            pass
+        app.setWindowIcon(QIcon(_icon))
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

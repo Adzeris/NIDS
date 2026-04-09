@@ -68,7 +68,7 @@ Then restart the NIDS engine from the GUI if needed.
 
 If you move the project directory, update:
 
-- `nids.desktop` → `Exec=` line  
+- `nids_launcher.desktop` → `Exec=` line  
 - Metasploit `PASS_FILE` path in `ssh_bruteforce.rc` if you relocate `metasploit_lab/`
 
 The default `logging` merge in `config.py` keeps logs under this project’s `logs/` directory automatically when you do not override `log_dir` in JSON.

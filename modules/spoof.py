@@ -32,8 +32,10 @@ arp_table = {}
 arp_cooldowns = {}
 ttl_baselines = defaultdict(lambda: deque(maxlen=100))
 ttl_alert_cooldowns = {}
+ttl_alert_counts = defaultdict(int)
 blocked_ips = set()
 blocked_macs = set()
+stats = {"arp_packets": 0, "ip_packets": 0, "blocks": 0}
 _start_time = None
 
 STANDARD_TTLS = {32, 64, 128, 255}
@@ -85,6 +87,7 @@ def _block(src, reason):
     if src not in blocked_ips:
         block_ip(CHAIN, src)
         blocked_ips.add(src)
+        stats["blocks"] += 1
         _emit(f"[BLOCK] Blocked {src} ({reason})")
 
 
@@ -122,15 +125,15 @@ def _handle_arp(pkt):
                 blocked_macs.add(src_mac)
                 if arpnft.arp_block_mac(src_mac, _cfg["interface"]):
                     _emit(
-                        f"[BLOCK] Blocked attacker MAC {src_mac} "
+                        f"[BLOCK] Blocked attacker MAC {src_mac} ({src_ip}) "
                         f"(ARP poisoning — iptables + nftables ARP drop)"
                     )
                 else:
                     _emit(
-                        f"[BLOCK] Blocked attacker MAC {src_mac} "
+                        f"[BLOCK] Blocked attacker MAC {src_mac} ({src_ip}) "
                         f"(ARP poisoning — install nftables + sudo for full ARP drop)"
                     )
-                persist_detected_mac(src_mac, "?", _emit)
+                persist_detected_mac(src_mac, src_ip, _emit)
                 return
 
     arp_table[src_ip] = src_mac
@@ -160,13 +163,22 @@ def _handle_ip(pkt):
         _block(src, "bogon address")
         return
 
+    ttl_local_only = _cfg["spoof"].get("ttl_local_only", True)
+    if ttl_local_only and _local_net:
+        try:
+            if ipaddress.ip_address(src) not in _local_net:
+                return
+        except ValueError:
+            return
+
     ttl = pkt[IP].ttl
     if ttl <= 1 or ttl == 255:
         return
 
     deviation = _cfg["spoof"].get("ttl_deviation", 15)
     min_samples = _cfg["spoof"].get("ttl_min_samples", 10)
-    cooldown = _cfg["spoof"].get("arp_alert_cooldown", 30)
+    cooldown = _cfg["spoof"].get("ttl_alert_cooldown", 120)
+    max_alerts = _cfg["spoof"].get("ttl_max_alerts_per_source", 3)
 
     initial_ttl = _nearest_initial_ttl(ttl)
     history = ttl_baselines[src]
@@ -180,11 +192,16 @@ def _handle_ip(pkt):
     dominant_ttl, _ = counts.most_common(1)[0]
 
     if initial_ttl != dominant_ttl and abs(ttl - dominant_ttl) > deviation:
+        if ttl_alert_counts[src] >= max_alerts:
+            return
         if src not in ttl_alert_cooldowns or (now - ttl_alert_cooldowns[src]) > cooldown:
+            ttl_alert_counts[src] += 1
+            remaining = max_alerts - ttl_alert_counts[src]
+            suppress_note = "" if remaining > 0 else " (further alerts suppressed)"
             _emit(
                 f"[ALERT] TTL anomaly from {src}: "
                 f"got {ttl} (init {initial_ttl}), expected ~{dominant_ttl} "
-                f"— possible spoof"
+                f"— possible spoof{suppress_note}"
             )
             ttl_alert_cooldowns[src] = now
 
@@ -195,8 +212,10 @@ def _on_packet(pkt):
         return
 
     if pkt.haslayer(ARP):
+        stats["arp_packets"] += 1
         _handle_arp(pkt)
     if pkt.haslayer(IP):
+        stats["ip_packets"] += 1
         _handle_ip(pkt)
 
 
@@ -229,14 +248,18 @@ def run_detector(cfg, stop_event=None):
             for _, rcv in ans:
                 gw_mac = rcv[Ether].src.upper()
                 arp_table[_gateway_ip] = gw_mac
-                _emit(f"[INFO] Gateway MAC: {gw_mac}")
+                _emit(f"[INFO] Gateway IP: {_gateway_ip}")
                 break
         except Exception:
             pass
     ttl_baselines.clear()
     ttl_alert_cooldowns.clear()
+    ttl_alert_counts.clear()
     blocked_ips.clear()
     blocked_macs.clear()
+    stats["arp_packets"] = 0
+    stats["ip_packets"] = 0
+    stats["blocks"] = 0
 
     ensure_chain(CHAIN)
     flush_chain(CHAIN)

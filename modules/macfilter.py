@@ -9,6 +9,7 @@ from scapy.all import sniff, Ether, IP
 import time
 
 from modules.firewall import ensure_chain, flush_chain, block_mac, unblock_mac, ts
+from modules.netutil import get_interface_ip, get_default_gateway
 from modules.detected_mac_persist import persist as persist_detected_mac
 
 CHAIN = "NIDS_MACFILTER"
@@ -16,6 +17,9 @@ CHAIN = "NIDS_MACFILTER"
 _callback = None
 _blocked_macs = set()
 _alerted_macs = set()
+_safe_ips = set()
+_defense_ip = None
+stats = {"frames": 0, "blocks": 0}
 
 
 def set_callback(fn):
@@ -35,7 +39,13 @@ def _on_packet(pkt, cfg):
     if not pkt.haslayer(Ether):
         return
 
+    stats["frames"] += 1
     src_mac = pkt[Ether].src.upper()
+    src_ip = pkt[IP].src if pkt.haslayer(IP) else "N/A"
+
+    if src_ip == _defense_ip or src_ip in _safe_ips:
+        return
+
     mode = cfg["macfilter"]["mode"]
     allowed = {m.upper() for m in cfg["macfilter"]["allowed_macs"]}
     deny = {m.upper() for m in cfg["macfilter"]["blocked_macs"]}
@@ -50,26 +60,39 @@ def _on_packet(pkt, cfg):
             should_block = True
 
     if should_block and src_mac not in _blocked_macs:
-        src_ip = pkt[IP].src if pkt.haslayer(IP) else "N/A"
-        _emit(f"[ALERT] Unauthorised MAC {src_mac} (IP: {src_ip}) — blocking")
+        _emit(f"[ALERT] Unauthorised MAC {src_mac} ({src_ip}) — blocking")
         block_mac(CHAIN, src_mac)
         _blocked_macs.add(src_mac)
+        stats["blocks"] += 1
         persist_detected_mac(src_mac, src_ip, _emit)
-        _emit(f"[BLOCK] MAC {src_mac} dropped via {CHAIN}")
+        _emit(f"[BLOCK] MAC {src_mac} ({src_ip}) dropped via {CHAIN}")
 
     if not should_block and src_mac in _blocked_macs:
         unblock_mac(CHAIN, src_mac)
         _blocked_macs.discard(src_mac)
-        _emit(f"[UNBLOCK] MAC {src_mac} removed from block list")
+        _emit(f"[UNBLOCK] MAC {src_mac} ({src_ip}) removed from block list")
 
 
 def run_detector(cfg, stop_event=None):
     """Main loop -- runs until stop_event is set."""
+    global _safe_ips, _defense_ip
     iface = cfg["interface"]
     mode = cfg["macfilter"]["mode"]
 
+    _defense_ip = get_interface_ip(iface)
+    _safe_ips = {"0.0.0.0", "255.255.255.255"}
+    gw = get_default_gateway(iface)
+    if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
+        _safe_ips.add(gw)
+    if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
+        _safe_ips.add(cfg["spoof"]["host_ip"].strip())
+    for ip_str in cfg.get("spoof", {}).get("whitelist_ips", []):
+        _safe_ips.add(ip_str.strip())
+
     _blocked_macs.clear()
     _alerted_macs.clear()
+    stats["frames"] = 0
+    stats["blocks"] = 0
 
     ensure_chain(CHAIN)
     flush_chain(CHAIN)

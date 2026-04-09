@@ -97,5 +97,45 @@ def log_rule(chain, src, prefix):
     run(["sudo", "iptables", "-A", chain, "-s", src, "-j", "DROP"])
 
 
+def list_blocked_ips(chain):
+    """Return set of IPs blocked via -s <ip> -j DROP in the given chain."""
+    import re
+    result = set()
+    try:
+        proc = subprocess.run(
+            ["sudo", "iptables", "-S", chain],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode != 0:
+            return result
+        for line in proc.stdout.splitlines():
+            m = re.match(r'-A\s+\S+\s+-s\s+([\d.]+)(?:/32)?\s+-j\s+DROP', line)
+            if m:
+                result.add(m.group(1))
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return result
+
+
+def list_blocked_macs(chain):
+    """Return set of MACs blocked via --mac-source <mac> -j DROP."""
+    import re
+    result = set()
+    try:
+        proc = subprocess.run(
+            ["sudo", "iptables", "-S", chain],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode != 0:
+            return result
+        for line in proc.stdout.splitlines():
+            m = re.search(r'--mac-source\s+([\dA-Fa-f:]{17})\s+-j\s+DROP', line)
+            if m:
+                result.add(m.group(1).upper())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return result
+
+
 def ts():
     return time.strftime("%Y-%m-%d %H:%M:%S")

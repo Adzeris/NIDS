@@ -26,7 +26,7 @@ def persist(mac, last_ip="?", log_cb=None):
             cfg["macfilter"]["detected_macs"] = detected
             save_config(cfg)
             if log_cb:
-                log_cb(f"[INFO] MAC {mac} added to detected list for review")
+                log_cb(f"[INFO] MAC {mac} ({ip}) added to detected list for review")
         except Exception as e:
             if log_cb:
                 log_cb(f"[WARN] Could not persist detected MAC: {e}")

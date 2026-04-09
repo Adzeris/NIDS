@@ -120,6 +120,26 @@ def arp_flush_blocked():
     return True
 
 
+def arp_list_blocked():
+    """Return set of MACs currently in the nftables blocked_macs set."""
+    import re
+    result = set()
+    if not nft_available():
+        return result
+    try:
+        proc = subprocess.run(
+            ["sudo", "nft", "list", "set", "netdev", TABLE, SET_NAME],
+            capture_output=True, text=True, timeout=5,
+        )
+        if proc.returncode != 0:
+            return result
+        for m in re.finditer(r'([\da-fA-F]{2}(?::[\da-fA-F]{2}){5})', proc.stdout):
+            result.add(m.group(1).upper())
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+    return result
+
+
 def arp_destroy_table():
     if not nft_available():
         return False
