@@ -1,45 +1,57 @@
 #!/usr/bin/env bash
-# NIDS Installer — double-click or run: ./install_desktop.sh
-# Installs dependencies, sets permissions, adds NIDS to the app menu.
+# NIDS Installer — double-click or run: ./installer
+# Creates a local venv (avoids Kali/Debian PEP 668 pip blocks), then menu entry.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$ROOT/.venv"
 
 echo "=============================="
 echo "  NIDS Installer"
 echo "=============================="
 echo ""
 
-# 1. Check Python 3
+# 1. Python 3
 if ! command -v python3 &>/dev/null; then
   echo "[ERROR] Python 3 is not installed."
-  echo "  Run:  sudo apt install python3 python3-pip"
+  echo "  Run:  sudo apt install python3 python3-venv python3-pip"
   read -rp "Press Enter to exit..."
   exit 1
 fi
 echo "[OK] Python 3 found"
 
-# 2. Install Python dependencies
+# 2. Virtual environment + dependencies (works on Kali with PEP 668)
 if [[ -f "$ROOT/requirements.txt" ]]; then
-  echo "[...] Installing Python packages..."
-  pip3 install -r "$ROOT/requirements.txt" 2>/dev/null \
-    || pip3 install --user -r "$ROOT/requirements.txt" 2>/dev/null \
-    || sudo pip3 install -r "$ROOT/requirements.txt" \
-    || { echo "[ERROR] Could not install dependencies. Try: sudo pip3 install -r requirements.txt"; }
-  echo "[OK] Dependencies installed"
+  echo "[...] Setting up Python environment..."
+  if ! python3 -m venv --help &>/dev/null; then
+    echo "[ERROR] python3-venv is missing."
+    echo "  Run:  sudo apt install python3-venv"
+    read -rp "Press Enter to exit..."
+    exit 1
+  fi
+  if [[ ! -x "$VENV/bin/python3" ]]; then
+    python3 -m venv "$VENV"
+  fi
+  "$VENV/bin/pip" install --upgrade pip -q
+  if ! "$VENV/bin/pip" install -r "$ROOT/requirements.txt"; then
+    echo "[ERROR] pip install failed."
+    read -rp "Press Enter to exit..."
+    exit 1
+  fi
+  echo "[OK] Dependencies installed into .venv/"
 else
-  echo "[WARN] requirements.txt not found — skipping dependency install"
+  echo "[WARN] requirements.txt not found — skipping dependencies"
 fi
 
-# 3. Set permissions
+# 3. Permissions
 chmod +x "$ROOT/nids.sh" 2>/dev/null || true
-chmod +x "$ROOT/install_desktop.sh" 2>/dev/null || true
+chmod +x "$ROOT/installer" 2>/dev/null || true
 if [[ -f "$ROOT/icons/nids.png" ]]; then
   chmod a+r "$ROOT/icons/nids.png" 2>/dev/null || true
 fi
 echo "[OK] Permissions set"
 
-# 4. Create app menu entry
+# 4. App menu entry
 VERSION="$(grep -E '^APP_VERSION\s*=' "$ROOT/gui.py" 2>/dev/null | sed -n 's/.*"\([^"]*\)".*/\1/p')"
 [[ -z "$VERSION" ]] && VERSION="2.1"
 
@@ -76,7 +88,6 @@ echo ""
 echo "  To run:  Open app menu → search 'NIDS'"
 echo "           Or:  cd $ROOT && ./nids.sh"
 echo ""
-echo "  Note: NIDS requires root for packet capture."
-echo "  The launcher will prompt for your password."
+echo "  Note: NIDS needs root for packet capture (password prompt)."
 echo ""
 read -rp "Press Enter to close..."
