@@ -83,3 +83,8 @@ The GUI has four tabs:
 ## Built For
 
 This was built and tested on Kali Linux running in a VMware virtual machine; the same code paths apply on physical hardware when the correct interface is selected.
+
+## UI
+
+<img width="1657" height="994" alt="2 1" src="https://github.com/user-attachments/assets/23fd040f-a430-426b-823c-9452175e0e2a" />
+
