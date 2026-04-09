@@ -25,6 +25,14 @@ There is also a **MAC Address Filter** that supports whitelist and blacklist mod
 ## Requirements
 - Python 3, PyQt5, Scapy, Linux with iptables, Root privileges (needed for packet capture and firewall rules)
 
+
+## Installation
+
+Download and extract the project
+Double-click install_nids_menu.desktop (or run ./install_desktop.sh from a terminal)
+Open your app menu and search for NIDS
+NIDS will ask for your password (it needs root for packet capture)
+
 ## How to Run / Prerequisites
 
 ```bash
