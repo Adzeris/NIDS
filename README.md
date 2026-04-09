@@ -28,10 +28,10 @@ There is also a **MAC Address Filter** that supports whitelist and blacklist mod
 
 ## Installation
 
-Download and extract the project
-Double-click install_nids_menu.desktop (or run ./install_desktop.sh from a terminal)
-Open your app menu and search for NIDS
-NIDS will ask for your password (it needs root for packet capture)
+1. Download and extract the project
+2. Double-click install_nids_menu.desktop (or run ./install_desktop.sh from a terminal)
+3. Open your app menu and search for NIDS
+4. NIDS will ask for your password (it needs root for packet capture)
 
 ## How to Run / Prerequisites
 
