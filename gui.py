@@ -24,7 +24,7 @@ from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette, QPainte
 from config import load_config, save_config
 from engine import NIDSEngine
 
-APP_VERSION = "2.1"
+APP_VERSION = "2.1.1"
 
 _MAC_MODE_UI_TO_CFG = {"Allow Only": "whitelist", "Block Only": "blacklist"}
 _MAC_MODE_CFG_TO_UI = {v: k for k, v in _MAC_MODE_UI_TO_CFG.items()}
@@ -358,8 +358,8 @@ class MainWindow(QMainWindow):
     def _build_live_tab(self):
         w = QWidget()
         lay = QVBoxLayout(w)
-        lay.setSpacing(14)
-        lay.setContentsMargins(0, 6, 0, 0)
+        lay.setSpacing(4)
+        lay.setContentsMargins(0, 4, 0, 0)
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
@@ -367,28 +367,31 @@ class MainWindow(QMainWindow):
         self.log_view.setMinimumHeight(320)
         lay.addWidget(self.log_view, stretch=1)
 
-        blocks_grp = QGroupBox("Active Blocks")
-        blocks_lay = QVBoxLayout(blocks_grp)
-        blocks_lay.setContentsMargins(12, 18, 12, 12)
-        blocks_lay.setSpacing(8)
+        self.blocks_grp = QGroupBox()
+        blocks_lay = QVBoxLayout(self.blocks_grp)
+        blocks_lay.setContentsMargins(8, 6, 8, 6)
+        blocks_lay.setSpacing(4)
+        blocks_title = QLabel("Active Blocks")
+        blocks_title.setStyleSheet("font-weight: bold; font-size: 11px; color: #90caf9;")
+        blocks_lay.addWidget(blocks_title)
         self.blocks_list = QListWidget()
-        self.blocks_list.setFixedHeight(72)
+        self.blocks_list.setFixedHeight(60)
         self.blocks_list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.blocks_list.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         blocks_lay.addWidget(self.blocks_list)
         unblock_row = QHBoxLayout()
-        unblock_row.setSpacing(10)
+        unblock_row.setSpacing(8)
         unblock_sel_btn = QPushButton("Unblock")
         unblock_sel_btn.clicked.connect(self._unblock_selected)
         refresh_blocks_btn = QPushButton("Refresh")
         refresh_blocks_btn.clicked.connect(self._rebuild_blocks_from_firewall)
-        unblock_sel_btn.setStyleSheet("padding: 8px 14px;")
-        refresh_blocks_btn.setStyleSheet("padding: 8px 14px;")
+        unblock_sel_btn.setStyleSheet("padding: 4px 10px;")
+        refresh_blocks_btn.setStyleSheet("padding: 4px 10px;")
         unblock_row.addWidget(unblock_sel_btn)
         unblock_row.addWidget(refresh_blocks_btn)
         unblock_row.addStretch()
         blocks_lay.addLayout(unblock_row)
-        lay.addWidget(blocks_grp, stretch=0)
+        lay.addWidget(self.blocks_grp, stretch=0)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(6)
