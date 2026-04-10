@@ -16,11 +16,23 @@ if [ -f "$SCRIPT_DIR/icons/nids.png" ]; then
 fi
 
 if [ "$EUID" -ne 0 ]; then
+    # Fall back to ~/.Xauthority when XAUTHORITY is unset (common in launchers/terminals).
+    XAUTH="${XAUTHORITY:-$HOME/.Xauthority}"
+
+    # Allow root (the elevated process) to connect to the current user's X display.
+    xhost +SI:localuser:root 2>/dev/null || true
+
     if command -v pkexec &>/dev/null; then
-        exec pkexec env DISPLAY="$DISPLAY" XAUTHORITY="$XAUTHORITY" \
+        exec pkexec env \
+            DISPLAY="$DISPLAY" \
+            XAUTHORITY="$XAUTH" \
+            DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" \
             "$PYTHON" "$SCRIPT_DIR/gui.py"
     else
-        exec sudo "$PYTHON" "$SCRIPT_DIR/gui.py"
+        exec sudo -E \
+            DISPLAY="$DISPLAY" \
+            XAUTHORITY="$XAUTH" \
+            "$PYTHON" "$SCRIPT_DIR/gui.py"
     fi
 else
     exec "$PYTHON" "$SCRIPT_DIR/gui.py"
