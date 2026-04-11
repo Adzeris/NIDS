@@ -53,7 +53,7 @@ echo "[OK] Permissions set"
 
 # 4. App menu entry
 VERSION="$(grep -E '^APP_VERSION\s*=' "$ROOT/gui.py" 2>/dev/null | sed -n 's/.*"\([^"]*\)".*/\1/p')"
-[[ -z "$VERSION" ]] && VERSION="2.1"
+[[ -z "$VERSION" ]] && VERSION="3.0"
 
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$DESKTOP_DIR"

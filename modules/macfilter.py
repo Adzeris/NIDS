@@ -81,11 +81,12 @@ def run_detector(cfg, stop_event=None):
 
     _defense_ip = get_interface_ip(iface)
     _safe_ips = {"0.0.0.0", "255.255.255.255"}
-    gw = get_default_gateway(iface)
-    if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
-        _safe_ips.add(gw)
-    if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
-        _safe_ips.add(cfg["spoof"]["host_ip"].strip())
+    if cfg.get("network_mode", "nat") == "bridged":
+        gw = get_default_gateway(iface)
+        if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
+            _safe_ips.add(gw)
+        if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
+            _safe_ips.add(cfg["spoof"]["host_ip"].strip())
     for ip_str in cfg.get("spoof", {}).get("whitelist_ips", []):
         _safe_ips.add(ip_str.strip())
 

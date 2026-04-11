@@ -11,6 +11,7 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nids_con
 
 DEFAULTS = {
     "interface": "eth0",
+    "network_mode": "nat",
 
     "modules": {
         "portscan": True,

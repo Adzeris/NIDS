@@ -1,10 +1,11 @@
 {
   "interface": "eth0",
+  "network_mode": "nat",
   "modules": {
-    "portscan": false,
-    "bruteforce": false,
-    "dos": false,
-    "spoof": false,
+    "portscan": true,
+    "bruteforce": true,
+    "dos": true,
+    "spoof": true,
     "macfilter": false
   },
   "portscan": {
@@ -32,7 +33,7 @@
   },
   "spoof": {
     "arp_watch": true,
-    "gateway_auto_whitelist": true,
+    "gateway_auto_whitelist": false,
     "whitelist_host": false,
     "host_ip": "",
     "arp_alert_cooldown": 60,
@@ -53,6 +54,11 @@
         "mac": "00:50:56:FF:6B:DC",
         "last_ip": "?",
         "first_seen": "2026-04-05 02:22:07"
+      },
+      {
+        "mac": "00:0C:29:AD:13:B7",
+        "last_ip": "192.168.92.2",
+        "first_seen": "2026-04-11 22:26:32"
       }
     ]
   },

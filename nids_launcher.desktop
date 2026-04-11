@@ -1,8 +1,8 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=NIDS v2.1.1
-Comment=Network Intrusion Detection System (v2.1.1)
+Name=NIDS v3.0
+Comment=Network Intrusion Detection System (v3.0)
 Exec=/home/kali/Desktop/nids_edit_metasploit/nids.sh
 Icon=/home/kali/Desktop/nids_edit_metasploit/icons/nids.png
 Terminal=false

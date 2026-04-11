@@ -43,13 +43,16 @@ def _emit(msg):
 
 def _try_block(ip, service, count, window):
     with _lock:
-        if ip in blocked_ips or ip in _safe_ips:
+        if ip in blocked_ips:
             return
         _emit(f"[ALERT] {service} brute force from {ip} ({count} attempts in {window}s)")
-        block_ip(CHAIN, ip)
-        blocked_ips.add(ip)
-        stats["blocks"] += 1
-        _emit(f"[BLOCK] Blocked {ip}")
+        if ip in _safe_ips:
+            _emit(f"[WARN] {ip} is the gateway/whitelisted — alerting only (blocking would break connectivity)")
+        else:
+            block_ip(CHAIN, ip)
+            blocked_ips.add(ip)
+            stats["blocks"] += 1
+            _emit(f"[BLOCK] Blocked {ip}")
 
 
 # ---- SSH watcher ---------------------------------------------------------
@@ -68,7 +71,7 @@ def _process_ssh_line(line, cfg):
     ip = m.group(1)
     now = time.time()
 
-    if ip in blocked_ips or ip in _safe_ips:
+    if ip in blocked_ips:
         return
 
     threshold = cfg["bruteforce"]["threshold"]
@@ -133,7 +136,7 @@ def _process_ftp_line(line, cfg):
         return
 
     now = time.time()
-    if ip in blocked_ips or ip in _safe_ips:
+    if ip in blocked_ips:
         return
 
     threshold = cfg["bruteforce"].get("ftp_threshold", 5)
@@ -190,11 +193,12 @@ def _ftp_watcher(cfg, stop_event):
 
 def _build_safe_ips(cfg, iface):
     safe = {"0.0.0.0", "255.255.255.255"}
-    gw = get_default_gateway(iface)
-    if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
-        safe.add(gw)
-    if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
-        safe.add(cfg["spoof"]["host_ip"].strip())
+    if cfg.get("network_mode", "nat") == "bridged":
+        gw = get_default_gateway(iface)
+        if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
+            safe.add(gw)
+        if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
+            safe.add(cfg["spoof"]["host_ip"].strip())
     for ip_str in cfg.get("spoof", {}).get("whitelist_ips", []):
         safe.add(ip_str.strip())
     return safe

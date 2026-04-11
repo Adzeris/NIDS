@@ -50,11 +50,12 @@ def count_icmp_by_source(iface):
 
 def _build_safe_ips(cfg, iface):
     safe = {"0.0.0.0", "255.255.255.255"}
-    gw = get_default_gateway(iface)
-    if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
-        safe.add(gw)
-    if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
-        safe.add(cfg["spoof"]["host_ip"].strip())
+    if cfg.get("network_mode", "nat") == "bridged":
+        gw = get_default_gateway(iface)
+        if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
+            safe.add(gw)
+        if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
+            safe.add(cfg["spoof"]["host_ip"].strip())
     for ip_str in cfg.get("spoof", {}).get("whitelist_ips", []):
         safe.add(ip_str.strip())
     return safe
@@ -83,14 +84,17 @@ def run_detector(cfg, stop_event=None):
             stats["icmp_total"] += sum(counts.values())
 
             for src_ip, pps in counts.items():
-                if src_ip in blocked_ips or src_ip in _safe_ips:
+                if src_ip in blocked_ips:
                     continue
                 if pps > threshold:
                     _emit(f"[ALERT] DoS flood from {src_ip}: {pps} pps")
-                    block_ip(CHAIN, src_ip)
-                    blocked_ips.add(src_ip)
-                    stats["blocks"] += 1
-                    _emit(f"[BLOCK] Blocked {src_ip}")
+                    if src_ip in _safe_ips:
+                        _emit(f"[WARN] {src_ip} is the gateway/whitelisted — alerting only (blocking would break connectivity)")
+                    else:
+                        block_ip(CHAIN, src_ip)
+                        blocked_ips.add(src_ip)
+                        stats["blocks"] += 1
+                        _emit(f"[BLOCK] Blocked {src_ip}")
     finally:
         flush_chain(CHAIN)
         _emit("[STOP] DoS detector stopped")

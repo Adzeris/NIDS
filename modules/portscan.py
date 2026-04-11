@@ -75,12 +75,15 @@ def _block_scan(src, pkt, unique_ports, count, window, label):
         f"[ALERT] {label} scan from {src} / {src_mac} "
         f"({len(unique_ports)} ports / {count} {proto} in {window}s)"
     )
-    block_ip(CHAIN, src)
-    blocked_ips.add(src)
-    stats["blocks"] += 1
     if src_mac != "unknown":
         persist_detected_mac(src_mac, src, _emit)
-    _emit(f"[BLOCK] Blocked {src}")
+    if src in _safe_ips:
+        _emit(f"[WARN] {src} is the gateway/whitelisted — alerting only (blocking would break connectivity)")
+    else:
+        block_ip(CHAIN, src)
+        blocked_ips.add(src)
+        stats["blocks"] += 1
+        _emit(f"[BLOCK] Blocked {src}")
     seen_ports[src].clear()
     seen_syns[src].clear()
     slow_seen_ports[src].clear()
@@ -156,7 +159,7 @@ def _on_packet(pkt):
     src = pkt[IP].src
     dst = pkt[IP].dst
 
-    if src in blocked_ips or src in _safe_ips:
+    if src in blocked_ips:
         return
 
     if TCP in pkt:
@@ -167,11 +170,12 @@ def _on_packet(pkt):
 
 def _build_safe_ips(cfg, iface):
     safe = {"0.0.0.0", "255.255.255.255"}
-    gw = get_default_gateway(iface)
-    if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
-        safe.add(gw)
-    if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
-        safe.add(cfg["spoof"]["host_ip"].strip())
+    if cfg.get("network_mode", "nat") == "bridged":
+        gw = get_default_gateway(iface)
+        if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
+            safe.add(gw)
+        if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
+            safe.add(cfg["spoof"]["host_ip"].strip())
     for ip_str in cfg.get("spoof", {}).get("whitelist_ips", []):
         safe.add(ip_str.strip())
     return safe

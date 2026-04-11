@@ -24,7 +24,7 @@ from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette, QPainte
 from config import load_config, save_config
 from engine import NIDSEngine
 
-APP_VERSION = "2.1.1"
+APP_VERSION = "3.0"
 
 _MAC_MODE_UI_TO_CFG = {"Allow Only": "whitelist", "Block Only": "blacklist"}
 _MAC_MODE_CFG_TO_UI = {v: k for k, v in _MAC_MODE_UI_TO_CFG.items()}
@@ -61,6 +61,20 @@ class EngineWorker(QThread):
 
 
 class ClickFocusSpinBox(QSpinBox):
+    """Ignore mouse-wheel changes unless the field already has focus."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.StrongFocus)
+
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class ClickFocusComboBox(QComboBox):
     """Ignore mouse-wheel changes unless the field already has focus."""
 
     def __init__(self, *args, **kwargs):
@@ -446,6 +460,58 @@ class MainWindow(QMainWindow):
             mod_lay.addWidget(cb)
         lay.addWidget(mod_grp)
 
+        # Network Mode
+        netmode_grp = QGroupBox("Network Mode")
+        netmode_lay = QVBoxLayout(netmode_grp)
+        netmode_lay.setSpacing(10)
+        netmode_lay.setContentsMargins(14, 20, 14, 14)
+
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("VM Network Mode:"))
+        self.netmode_combo = ClickFocusComboBox()
+        self.netmode_combo.addItems(["NAT (VMware / VirtualBox)", "Bridged (Home network)"])
+        self.netmode_combo.setMinimumHeight(30)
+        mode_row.addWidget(self.netmode_combo)
+        mode_row.addStretch()
+        netmode_lay.addLayout(mode_row)
+
+        self.netmode_hint = QLabel("")
+        self.netmode_hint.setWordWrap(True)
+        self.netmode_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
+        netmode_lay.addWidget(self.netmode_hint)
+
+        self.bridged_opts = QWidget()
+        bridged_lay = QFormLayout(self.bridged_opts)
+        bridged_lay.setVerticalSpacing(10)
+        bridged_lay.setContentsMargins(0, 6, 0, 0)
+
+        self.chk_whitelist_host = QCheckBox("Whitelist host machine IP (prevents blocking your PC)")
+        bridged_lay.addRow(self.chk_whitelist_host)
+        self.host_ip_edit = QLineEdit()
+        self.host_ip_edit.setPlaceholderText("e.g. 192.168.1.100")
+        self.host_ip_edit.setMinimumHeight(30)
+        bridged_lay.addRow("Host machine IP:", self.host_ip_edit)
+
+        netmode_lay.addWidget(self.bridged_opts)
+        lay.addWidget(netmode_grp)
+
+        def _on_netmode_changed(idx):
+            is_bridged = idx == 1
+            self.bridged_opts.setVisible(is_bridged)
+            if is_bridged:
+                self.netmode_hint.setText(
+                    "Bridged mode: your VM shares the Home network. The gateway (router) "
+                    "will be whitelisted to avoid breaking internet. Optionally whitelist "
+                    "your host PC above."
+                )
+            else:
+                self.netmode_hint.setText(
+                    "NAT mode: attacker traffic arrives as the gateway IP. "
+                    "No IPs are auto-whitelisted so all attacks are detected."
+                )
+        self.netmode_combo.currentIndexChanged.connect(_on_netmode_changed)
+        _on_netmode_changed(0)
+
         advanced_grp = QGroupBox("Advanced Options")
         advanced_lay = QVBoxLayout(advanced_grp)
         advanced_lay.setSpacing(10)
@@ -594,22 +660,6 @@ class MainWindow(QMainWindow):
         sp_lay.addRow(self.chk_ttl_local_only)
         sp_lay.addRow("Block duration (sec):", self.spin_sp_block)
 
-        wl_hint = QLabel("Whitelist / exception settings")
-        wl_hint.setStyleSheet("color: #8b949e; margin-top: 6px;")
-        sp_lay.addRow(wl_hint)
-
-        self.chk_whitelist_host = QCheckBox("Whitelist Host IP (bridged mode only)")
-        sp_lay.addRow(self.chk_whitelist_host)
-        self.host_ip_edit = QLineEdit()
-        self.host_ip_edit.setPlaceholderText("e.g. 192.168.1.100")
-        self.host_ip_edit.setMinimumHeight(30)
-        sp_lay.addRow("Host machine IP:", self.host_ip_edit)
-
-        self.chk_gateway_auto_whitelist = QCheckBox(
-            "Gateway Auto Whitelist (Warning, turning it off can break the internet if using bridged)"
-        )
-        sp_lay.addRow(self.chk_gateway_auto_whitelist)
-
         wl_label = QLabel("IP Whitelist (never blocked by spoof detector):")
         wl_label.setStyleSheet("color: #8b949e; margin-top: 6px;")
         sp_lay.addRow(wl_label)
@@ -656,7 +706,7 @@ class MainWindow(QMainWindow):
 
         mode_grp = QGroupBox("Filter Mode")
         mode_lay = QHBoxLayout(mode_grp)
-        self.mac_mode_combo = QComboBox()
+        self.mac_mode_combo = ClickFocusComboBox()
         self.mac_mode_combo.addItems(["Allow Only", "Block Only"])
         mode_lay.addWidget(QLabel("Mode:"))
         mode_lay.addWidget(self.mac_mode_combo)
@@ -920,6 +970,12 @@ class MainWindow(QMainWindow):
         c = self.cfg
         self.iface_edit.setText(c["interface"])
 
+        mode = c.get("network_mode", "nat")
+        self.netmode_combo.setCurrentIndex(0 if mode == "nat" else 1)
+        self.bridged_opts.setVisible(mode == "bridged")
+        self.chk_whitelist_host.setChecked(c["spoof"].get("whitelist_host", False))
+        self.host_ip_edit.setText(c["spoof"].get("host_ip", ""))
+
         m = c["modules"]
         self.chk_portscan.setChecked(m["portscan"])
         self.chk_bruteforce.setChecked(m["bruteforce"])
@@ -952,9 +1008,6 @@ class MainWindow(QMainWindow):
 
         sp = c["spoof"]
         self.chk_arp_watch.setChecked(sp.get("arp_watch", True))
-        self.chk_gateway_auto_whitelist.setChecked(sp.get("gateway_auto_whitelist", True))
-        self.chk_whitelist_host.setChecked(sp.get("whitelist_host", False))
-        self.host_ip_edit.setText(sp.get("host_ip", ""))
         self.spin_sp_arp_cooldown.setValue(sp.get("arp_alert_cooldown", 30))
         self.spin_sp_ttl_dev.setValue(sp.get("ttl_deviation", 15))
         self.spin_sp_ttl_samples.setValue(sp.get("ttl_min_samples", 10))
@@ -992,6 +1045,12 @@ class MainWindow(QMainWindow):
         c = self.cfg
         c["interface"] = self.iface_edit.text().strip() or "eth0"
 
+        is_bridged = self.netmode_combo.currentIndex() == 1
+        c["network_mode"] = "bridged" if is_bridged else "nat"
+        c["spoof"]["gateway_auto_whitelist"] = is_bridged
+        c["spoof"]["whitelist_host"] = self.chk_whitelist_host.isChecked() if is_bridged else False
+        c["spoof"]["host_ip"] = self.host_ip_edit.text().strip() if is_bridged else ""
+
         c["modules"]["portscan"] = self.chk_portscan.isChecked()
         c["modules"]["bruteforce"] = self.chk_bruteforce.isChecked()
         c["modules"]["dos"] = self.chk_dos.isChecked()
@@ -1019,9 +1078,6 @@ class MainWindow(QMainWindow):
         c["dos"]["block_seconds"] = self.spin_dos_block.value()
 
         c["spoof"]["arp_watch"] = self.chk_arp_watch.isChecked()
-        c["spoof"]["gateway_auto_whitelist"] = self.chk_gateway_auto_whitelist.isChecked()
-        c["spoof"]["whitelist_host"] = self.chk_whitelist_host.isChecked()
-        c["spoof"]["host_ip"] = self.host_ip_edit.text().strip()
         c["spoof"]["arp_alert_cooldown"] = self.spin_sp_arp_cooldown.value()
         c["spoof"]["ttl_deviation"] = self.spin_sp_ttl_dev.value()
         c["spoof"]["ttl_min_samples"] = self.spin_sp_ttl_samples.value()
