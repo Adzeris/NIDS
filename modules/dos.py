@@ -3,8 +3,10 @@
 DoS / volumetric flood detector v2.0 — CUSUM change-point detection.
 
 Detection strategies:
-  Baseline (threshold):  alert when ICMP packets-per-second from a single
+  Baseline (threshold):  alert when flood packets-per-second from a single
                          source exceed a fixed threshold in a 1-second sample.
+                         Flood packets are ICMP echo requests plus TCP SYN
+                         packets (SYN without ACK).
   Improved (CUSUM):      Cumulative Sum change-point algorithm.  Learns a
       baseline traffic rate during an initial calibration window, then tracks
       cumulative deviation.  Detects both sudden spikes AND gradual ramp-ups
@@ -29,7 +31,7 @@ from collections import defaultdict
 
 from modules.base import BaseDetector, cusum_step, rolling_stats
 from modules.firewall import ensure_chain, flush_chain, block_ip, ts
-from modules.netutil import get_default_gateway
+from modules.netutil import get_default_gateway, get_interface_ip
 
 
 class DoSDetector(BaseDetector):
@@ -54,7 +56,13 @@ class DoSDetector(BaseDetector):
         self._global_samples = []
         self._baseline_mean = None
 
-        self.stats = {'samples': 0, 'icmp_total': 0, 'blocks': 0}
+        self.stats = {
+            'samples': 0,
+            'icmp_total': 0,
+            'syn_total': 0,
+            'sampled_total': 0,
+            'blocks': 0,
+        }
 
     def _build_safe_ips(self):
         cfg = self.cfg
@@ -72,28 +80,48 @@ class DoSDetector(BaseDetector):
         return safe
 
     @staticmethod
-    def _count_icmp_by_source(iface):
-        cmd = ["sudo", "timeout", "1", "tcpdump", "-n", "-i", iface, "icmp"]
+    def _count_flood_packets_by_source(iface, monitored_ip=None):
+        cmd = ["sudo", "timeout", "1", "tcpdump", "-n", "-i", iface, "icmp or tcp"]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         counts = defaultdict(int)
+        breakdown = defaultdict(lambda: {'icmp_echo': 0, 'tcp_syn': 0})
         for line in proc.stdout.splitlines():
             m = re.search(
-                r'IP\s+(\d+\.\d+\.\d+\.\d+)\s+>\s+(\d+\.\d+\.\d+\.\d+):', line)
+                r'IP\s+(\d+\.\d+\.\d+\.\d+)(?:\.\d+)?\s+>\s+'
+                r'(\d+\.\d+\.\d+\.\d+)(?:\.\d+)?:', line)
             if not m:
                 continue
-            if 'ICMP echo request' not in line:
+            src_ip = m.group(1)
+            dst_ip = m.group(2)
+            if monitored_ip and dst_ip != monitored_ip:
                 continue
-            counts[m.group(1)] += 1
-        return counts
+
+            if 'ICMP echo request' in line:
+                counts[src_ip] += 1
+                breakdown[src_ip]['icmp_echo'] += 1
+                continue
+
+            # Count SYN-only packets so TCP SYN floods are visible to DoS logic.
+            flags_m = re.search(r'Flags\s+\[([^\]]+)\]', line)
+            if not flags_m:
+                continue
+            flags = flags_m.group(1)
+            if 'S' in flags and '.' not in flags:
+                counts[src_ip] += 1
+                breakdown[src_ip]['tcp_syn'] += 1
+
+        return counts, breakdown
 
     # -- feature extraction ------------------------------------------------
 
-    def _features(self, src_ip, pps, cusum_val):
+    def _features(self, src_ip, pps, cusum_val, *, icmp_pps=0, syn_pps=0):
         hist = self._rate_history.get(src_ip, [])
         mean_r, std_r = rolling_stats(hist) if len(hist) >= 2 else (0.0, 0.0)
 
         return {
             'source_pps': pps,
+            'icmp_echo_pps': icmp_pps,
+            'tcp_syn_pps': syn_pps,
             'cusum_value': round(cusum_val, 4),
             'baseline_mean': round(self._baseline_mean or 0.0, 4),
             'rate_history_len': len(hist),
@@ -129,19 +157,38 @@ class DoSDetector(BaseDetector):
     def run(self):
         iface = self.cfg['interface']
         threshold = self.cfg['dos']['threshold_pps']
+        syn_threshold = int(self.cfg['dos'].get(
+            'syn_threshold_pps', max(80, threshold // 3)))
+        # Keep CUSUM from reacting to low-rate normal TCP handshakes.
+        min_pps_for_cusum = max(20, int(threshold * 0.1))
+        monitored_ip = self.cfg.get('spoof', {}).get('host_ip', '').strip()
+        if not monitored_ip:
+            try:
+                monitored_ip = get_interface_ip(iface)
+            except OSError:
+                monitored_ip = None
         self._safe_ips = self._build_safe_ips()
         self.reset_state()
 
         ensure_chain(self.CHAIN)
         flush_chain(self.CHAIN)
         self._emit(f"[START] DoS detector v{self.VERSION}")
+        self.info(
+            f"DoS monitor target={monitored_ip or 'any'} "
+            f"icmp_threshold={threshold} syn_threshold={syn_threshold}"
+        )
 
         try:
             while not self.stop_event.is_set():
-                counts = self._count_icmp_by_source(iface)
+                counts, breakdown = self._count_flood_packets_by_source(
+                    iface, monitored_ip)
                 self.stats['samples'] += 1
                 total = sum(counts.values())
-                self.stats['icmp_total'] += total
+                icmp_total = sum(v['icmp_echo'] for v in breakdown.values())
+                syn_total = sum(v['tcp_syn'] for v in breakdown.values())
+                self.stats['icmp_total'] += icmp_total
+                self.stats['syn_total'] += syn_total
+                self.stats['sampled_total'] += total
 
                 # Global calibration for CUSUM baseline
                 self._global_samples.append(total)
@@ -164,22 +211,37 @@ class DoSDetector(BaseDetector):
                             self._baseline_mean, slack)
 
                     cusum_val = self._cusum_s.get(src_ip, 0.0)
-                    feat = self._features(src_ip, pps, cusum_val)
+                    proto_counts = breakdown.get(src_ip, {})
+                    icmp_pps = proto_counts.get('icmp_echo', 0)
+                    syn_pps = proto_counts.get('tcp_syn', 0)
+                    feat = self._features(
+                        src_ip, pps, cusum_val,
+                        icmp_pps=icmp_pps, syn_pps=syn_pps,
+                    )
                     conf = self._confidence(feat, threshold)
                     feat['confidence'] = conf
 
                     # Decision
                     if self.method == 'baseline':
-                        triggered = pps > threshold
+                        triggered = (
+                            pps > threshold
+                            or icmp_pps > threshold
+                            or syn_pps > syn_threshold
+                        )
                     else:
-                        triggered = pps > threshold
+                        triggered = (
+                            pps > threshold
+                            or icmp_pps > threshold
+                            or syn_pps > syn_threshold
+                        )
                         if (not triggered
                                 and self._baseline_mean is not None):
                             h = self._baseline_mean * 5
-                            triggered = cusum_val > h
+                            triggered = pps >= min_pps_for_cusum and cusum_val > h
 
                     if triggered:
                         msg = (f"DoS flood from {src_ip}: {pps} pps"
+                               f" (icmp={icmp_pps}, syn={syn_pps})"
                                f" (CUSUM={cusum_val:.1f})")
                         self.alert(message=msg, source_ip=src_ip,
                                    confidence=conf, features=feat)
@@ -208,7 +270,7 @@ class DoSDetector(BaseDetector):
 # Module-level compatibility
 # ---------------------------------------------------------------------------
 _callback = None
-stats = {"samples": 0, "icmp_total": 0, "blocks": 0}
+stats = {"samples": 0, "icmp_total": 0, "syn_total": 0, "sampled_total": 0, "blocks": 0}
 
 def set_callback(fn):
     global _callback

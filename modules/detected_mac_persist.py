@@ -15,7 +15,13 @@ def persist(mac, last_ip="?", log_cb=None):
     with _lock:
         try:
             cfg = load_config()
-            detected = cfg["macfilter"].get("detected_macs", [])
+            mcfg = cfg.get("macfilter", {})
+            blocked = {m.upper() for m in mcfg.get("blocked_macs", [])}
+            allowed = {m.upper() for m in mcfg.get("allowed_macs", [])}
+            # Already policy-decided: do not re-add to pending review.
+            if mac in blocked or mac in allowed:
+                return
+            detected = mcfg.get("detected_macs", [])
             existing = {
                 e["mac"].upper() for e in detected if isinstance(e, dict) and "mac" in e
             }

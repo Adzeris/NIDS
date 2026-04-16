@@ -31,6 +31,7 @@ Scan types detected: TCP SYN, Xmas, Null, FIN, ACK (stealth), UDP probes — wit
 - **Ground-truth file**: JSON list of labelled IPs (and optional time bounds for latency); lab-authored
 
 **What this does not prove by itself:** that “improved” outperforms “baseline” in general.  That requires your experimental protocol, lab conditions, and labelling — metrics are aids, not a full benchmark suite.
+In my lab runs, a blocked host can still show up in logs because packet capture may observe attempts before drop rules fully take effect.
 
 ## Architecture
 

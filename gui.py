@@ -961,9 +961,13 @@ class MainWindow(QMainWindow):
         Dismissed MACs are hidden until a new detection un-dismisses them."""
         cfg = load_config()
         self.mac_det_list.clear()
+        blocked = {m.upper() for m in cfg["macfilter"].get("blocked_macs", [])}
+        allowed = {m.upper() for m in cfg["macfilter"].get("allowed_macs", [])}
         for entry in cfg["macfilter"].get("detected_macs", []):
             mac = entry["mac"].upper() if isinstance(entry, dict) else str(entry).upper()
             if mac in self._dismissed_macs:
+                continue
+            if mac in blocked or mac in allowed:
                 continue
             if isinstance(entry, dict):
                 self._add_detected_row(
@@ -1108,7 +1112,12 @@ class MainWindow(QMainWindow):
         for m in mc.get("blocked_macs", []):
             self.mac_bl_list.addItem(m)
         self.mac_det_list.clear()
+        blocked = {m.upper() for m in mc.get("blocked_macs", [])}
+        allowed = {m.upper() for m in mc.get("allowed_macs", [])}
         for entry in mc.get("detected_macs", []):
+            m = (entry["mac"] if isinstance(entry, dict) else str(entry)).upper()
+            if m in blocked or m in allowed:
+                continue
             if isinstance(entry, dict):
                 self._add_detected_row(
                     entry["mac"],
@@ -1132,9 +1141,8 @@ class MainWindow(QMainWindow):
         c["modules"]["bruteforce"] = self.chk_bruteforce.isChecked()
         c["modules"]["dos"] = self.chk_dos.isChecked()
         c["modules"]["spoof"] = self.chk_spoof.isChecked()
-        # MAC detector module remains off in normal GUI runs to keep startup
-        # noise low; MAC detections still populate from other detectors.
-        c["modules"]["macfilter"] = False
+        # MAC filter toggle was removed from UI; keep it enabled by default.
+        c["modules"]["macfilter"] = True
 
         c["portscan"]["port_threshold"] = self.spin_ps_ports.value()
         c["portscan"]["syn_threshold"] = self.spin_ps_syns.value()
@@ -1178,14 +1186,17 @@ class MainWindow(QMainWindow):
         c["macfilter"]["mode"] = _MAC_MODE_UI_TO_CFG.get(
             self.mac_mode_combo.currentText(), "whitelist"
         )
-        c["macfilter"]["allowed_macs"] = [
-            self.mac_wl_list.item(i).text()
+        raw_allowed = [
+            self.mac_wl_list.item(i).text().strip().upper()
             for i in range(self.mac_wl_list.count())
         ]
-        c["macfilter"]["blocked_macs"] = [
-            self.mac_bl_list.item(i).text()
+        raw_blocked = [
+            self.mac_bl_list.item(i).text().strip().upper()
             for i in range(self.mac_bl_list.count())
         ]
+        # Keep stable order while de-duplicating.
+        c["macfilter"]["allowed_macs"] = list(dict.fromkeys(m for m in raw_allowed if m))
+        c["macfilter"]["blocked_macs"] = list(dict.fromkeys(m for m in raw_blocked if m))
 
         gui_det_macs = set()
         for i in range(self.mac_det_list.count()):

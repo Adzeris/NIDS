@@ -25,7 +25,7 @@ DEFAULTS = {
         "bruteforce": True,
         "dos": True,
         "spoof": True,
-        "macfilter": False,
+        "macfilter": True,
     },
 
     "research": {
@@ -56,6 +56,7 @@ DEFAULTS = {
 
     "dos": {
         "threshold_pps": 500,
+        "syn_threshold_pps": 120,
         "block_seconds": 60,
     },
 

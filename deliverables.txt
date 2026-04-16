@@ -252,3 +252,62 @@ Unchanged files:
   nids.sh                      Launcher script
   hostbruteforce.txt           SSH start note
   codebase.txt                 Testing reference
+
+
+PRACTICAL LIMITATIONS AND ASSUMPTIONS (LAB NOTES)
+-------------------------------------------------
+- This branch is intended for controlled lab validation, not universal
+  internet-scale claims.
+- MAC blocking is link-local (L2) to the monitored segment/interface; it
+  blocks what reaches the NIDS host on that segment, but does not "disable"
+  a remote attacker device globally.
+- It is normal to still see some alert lines after a block if packets are
+  observed by sniffing before/drop during firewall processing.
+- DoS detector coverage in this branch is ICMP echo flood + TCP SYN flood
+  signals; this is not a full DoS taxonomy.
+
+
+QUICK BLOCK VERIFICATION CHECKLIST
+----------------------------------
+1. Confirm alert line appears for the expected detector.
+2. Confirm corresponding [BLOCK] line appears for IP and/or MAC.
+3. Confirm blocked entry appears in the GUI Active Blocks or MAC block list.
+4. Re-send traffic and verify service impact is reduced/denied at victim.
+5. Optional shell verification:
+   - sudo iptables -S NIDS_PORTSCAN
+   - sudo iptables -S NIDS_DOS
+   - sudo iptables -S NIDS_SPOOF
+   - sudo iptables -S NIDS_MACFILTER
+   - sudo nft list table netdev nids_nd
+
+
+PAIRED EXPERIMENT PROTOCOL (BASELINE VS IMPROVED)
+--------------------------------------------------
+1. Fix lab topology/interface and keep attacker script identical.
+2. Set research.detect_only=true for fair measurement runs.
+3. Run method=baseline and save events/metadata.
+4. Run method=improved under the same conditions.
+5. Label ground truth consistently for both runs.
+6. Compare with analyzer outputs (precision/recall/F1/latency) as
+   lab-specific evidence.
+
+
+GROUND-TRUTH LABELING NOTES
+---------------------------
+- Current analyzer logic is IP-level matching within detector scope.
+- start/end fields are currently used for latency windows, not full interval
+  overlap classification.
+- Evaluation outputs should be interpreted as exploratory metrics unless a
+  stricter labeling protocol is enforced across repeated runs.
+
+
+POST-UPGRADE MAINTENANCE FIXES APPLIED ON THIS BRANCH
+-----------------------------------------------------
+- DoS detector broadened from ICMP-only sampling to ICMP + TCP SYN sampling.
+- Added DoS SYN threshold config (syn_threshold_pps) to avoid missing SYN flood
+  traffic in practical lab runs.
+- GUI/config now keeps modules.macfilter enabled by default (toggle removed).
+- Detected-MAC persistence now avoids re-adding MACs that are already in
+  blocked/allowed policy lists.
+- GUI detected-MAC list now suppresses entries already policy-decided and
+  de-duplicates allowed/blocked MAC lists on save.

@@ -7,7 +7,7 @@
     "bruteforce": true,
     "dos": true,
     "spoof": true,
-    "macfilter": false
+    "macfilter": true
   },
   "research": {
     "detect_only": false,
@@ -34,6 +34,7 @@
   },
   "dos": {
     "threshold_pps": 500,
+    "syn_threshold_pps": 120,
     "block_seconds": 60
   },
   "spoof": {
@@ -59,12 +60,12 @@
       {
         "mac": "00:0C:29:AD:13:B7",
         "last_ip": "192.168.92.129",
-        "first_seen": "2026-04-16 04:20:32"
+        "first_seen": "2026-04-16 15:39:38"
       },
       {
         "mac": "00:50:56:FF:6B:DC",
-        "last_ip": "192.168.92.2",
-        "first_seen": "2026-04-16 12:37:20"
+        "last_ip": "?",
+        "first_seen": "2026-04-16 15:40:19"
       }
     ]
   },
