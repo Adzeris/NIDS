@@ -5,7 +5,7 @@ Evaluation metrics for NIDS detection experiments.
 Provides:
   ConfusionMatrix  — accumulator for TP/FP/TN/FN with derived metrics
   compare_methods  — side-by-side baseline vs improved analysis
-  detection_latency — time from attack onset to first alert
+  detection_latency — time from attack onset to first matching alert (optional IP/window)
 """
 
 from __future__ import annotations
@@ -76,12 +76,31 @@ class ConfusionMatrix:
                 f"P={self.precision:.3f} R={self.recall:.3f} F1={self.f1:.3f})")
 
 
-def detection_latency(attack_start_ts: float, events: list[dict]) -> float | None:
-    """Seconds between attack_start_ts and the first ALERT event.
-    Returns None if no alert was produced."""
-    for ev in sorted(events, key=lambda e: e['timestamp']):
-        if ev.get('event_type') == 'ALERT':
-            return ev['timestamp'] - attack_start_ts
+def detection_latency(
+    attack_start_ts: float,
+    events: list[dict],
+    *,
+    source_ip: str | None = None,
+    attack_end_ts: float | None = None,
+) -> float | None:
+    """Seconds from attack_start_ts to the first matching ALERT after that time.
+
+    If *source_ip* is set, only alerts for that IP count.  If *attack_end_ts*
+    is set, only alerts with timestamp <= *attack_end_ts* count.  Returns None
+    if no matching alert exists."""
+    for ev in sorted(events, key=lambda e: e.get('timestamp', 0)):
+        if ev.get('event_type') != 'ALERT':
+            continue
+        ts = ev.get('timestamp')
+        if ts is None:
+            continue
+        if ts < attack_start_ts:
+            continue
+        if attack_end_ts is not None and ts > attack_end_ts:
+            continue
+        if source_ip is not None and ev.get('source_ip') != source_ip:
+            continue
+        return ts - attack_start_ts
     return None
 
 

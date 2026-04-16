@@ -19,15 +19,20 @@ def analyze_run(events_path: str, ground_truth_path: str,
 
     Args:
         events_path:       JSONL file with structured detection events
-        ground_truth_path: JSON file with labelled attack/benign intervals
+        ground_truth_path: JSON file with labelled rows (lab-authored)
         output_dir:        directory for result artefacts
 
-    Ground truth format::
+    Ground truth format (each row is one labelled IP for that detector scope)::
         [
           {"source_ip": "10.0.0.5", "detector": "portscan",
            "is_attack": true, "start": 1700000000.0, "end": 1700000060.0},
           ...
         ]
+
+    Classification uses **IP presence** (whether an alert occurred for that IP
+    on the detector), not whether the alert fell inside ``start``/``end``.
+    Optional ``start``/``end`` bound **latency** only: first ALERT for that IP
+    at or after ``start`` (and at or before ``end`` if provided).
     """
     events = load_events(events_path)
     with open(ground_truth_path, 'r') as f:
@@ -41,7 +46,14 @@ def analyze_run(events_path: str, ground_truth_path: str,
     for gt in ground_truth:
         gt_by_detector[gt.get('detector', 'all')].append(gt)
 
-    report = {'detectors': {}}
+    report = {
+        'detectors': {},
+        'evaluation_note': (
+            'Exploratory metrics: IP-level match vs ground truth. '
+            'Baseline vs improved normally requires two runs (one method each) '
+            'unless events were merged from separate runs.'
+        ),
+    }
 
     for det_name, det_events in per_detector.items():
         gt_entries = gt_by_detector.get(det_name, gt_by_detector.get('all', []))
@@ -57,7 +69,13 @@ def analyze_run(events_path: str, ground_truth_path: str,
         latencies = []
         for gt in gt_entries:
             if gt['is_attack']:
-                lat = detection_latency(gt.get('start', 0), det_events)
+                end = gt.get('end')
+                lat = detection_latency(
+                    gt.get('start', 0),
+                    det_events,
+                    source_ip=gt.get('source_ip'),
+                    attack_end_ts=end if end is not None else None,
+                )
                 if lat is not None:
                     latencies.append(lat)
 
@@ -72,7 +90,7 @@ def analyze_run(events_path: str, ground_truth_path: str,
                                if e.get('event_type') == 'BLOCK'),
         }
 
-    # Method comparison (if both baseline and improved events present)
+    # Rare: both methods in one file (e.g. merged JSONL). A normal run has one method.
     methods_seen = {ev.get('method') for ev in events}
     if 'baseline' in methods_seen and 'improved' in methods_seen:
         report['method_comparison'] = {
@@ -83,6 +101,9 @@ def analyze_run(events_path: str, ground_truth_path: str,
                 1 for e in events
                 if e.get('method') == 'improved' and e.get('event_type') == 'ALERT'),
         }
+        report['method_comparison_note'] = (
+            'Counts both methods in this file; typical workflow uses one method per run.'
+        )
 
     os.makedirs(output_dir, exist_ok=True)
     out_path = os.path.join(output_dir, 'analysis_report.json')

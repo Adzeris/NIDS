@@ -1,12 +1,12 @@
-# NIDS — Network Intrusion Detection Research Platform (v4.0)
+# NIDS — Network Intrusion Detection System (v4.0)
 
-A modular, Python-based Network Intrusion Detection System designed as a **research platform** for evaluating and comparing detection algorithms under controlled, reproducible conditions.
+A modular, Python-based Network Intrusion Detection System for Linux.  This branch adds **experimental instrumentation** (structured events, baseline vs enhanced modes, detect-only operation, and small Python helpers to save runs and compute exploratory metrics) so you can run controlled lab experiments and document them clearly.
 
 ## Research Motivation
 
 Most lightweight NIDS implementations use fixed thresholds that are tuned by hand and never rigorously evaluated.  This project provides a framework for asking — and answering — whether statistically principled detection methods (entropy analysis, CUSUM change-point detection, Z-score anomaly modeling, inter-arrival time analysis) improve detection accuracy over simple thresholds, and by how much.
 
-Every detector supports **baseline** (original threshold logic) and **improved** (enhanced algorithm) modes that can be compared head-to-head under identical traffic conditions.
+Every detector supports **baseline** (original threshold logic) and **improved** (enhanced algorithm) via config.  **Comparing** them fairly means separate runs with the same scenario and traffic (one method per run), not a single run that contains both.
 
 ## Detection Modules (v2.0)
 
@@ -22,15 +22,15 @@ Scan types detected: TCP SYN, Xmas, Null, FIN, ACK (stealth), UDP probes — wit
 
 ## Research Features
 
-- **Baseline vs improved comparison**: every detector supports mode switching via config
-- **Detect-only mode**: suppresses blocking for clean evaluation
-- **Per-alert feature vectors**: each alert carries the features that triggered it
-- **Confidence scoring**: weighted multi-signal confidence on every detection event
-- **Structured JSONL logging**: machine-readable event stream with research metadata
-- **Run traceability**: every run gets a unique ID, config hash, and git commit stamp
-- **Evaluation framework**: confusion matrix, precision/recall/F1, detection latency
-- **Experiment runner**: reproducible scenario execution with result storage
-- **Ground-truth labeling**: structured format for attack/benign interval labeling
+- **Baseline vs improved**: mode switching via config (compare using **paired runs**, same attack and interface)
+- **Detect-only mode**: suppresses blocking so alerts do not change firewall state
+- **Per-alert feature vectors** and **confidence** fields on structured events
+- **Structured JSONL** and run metadata (run ID, config hash, git commit when available)
+- **Exploratory metrics** (`research/metrics.py`, `research/analyzer.py`): confusion-style counts and latency **helpers** — interpret with your own ground-truth definitions and limitations
+- **Experiment runner**: saves config snapshot, scenario, and events under `results/`
+- **Ground-truth file**: JSON list of labelled IPs (and optional time bounds for latency); lab-authored
+
+**What this does not prove by itself:** that “improved” outperforms “baseline” in general.  That requires your experimental protocol, lab conditions, and labelling — metrics are aids, not a full benchmark suite.
 
 ## Architecture
 
@@ -129,22 +129,6 @@ Results are stored in `results/<scenario_name>/<run_id>/` with:
 from research.analyzer import analyze_run
 report = analyze_run('results/.../events.jsonl', 'ground_truth.json')
 ```
-
-## Configuration
-
-All settings live in `nids_config.json`.  Key research settings:
-
-```json
-{
-  "research": {
-    "detect_only": false,
-    "method": "improved"
-  }
-}
-```
-
-- `detect_only`: when `true`, alerts are emitted but no iptables blocking occurs
-- `method`: `"baseline"` for original threshold logic, `"improved"` for enhanced algorithms
 
 ## Requirements
 
