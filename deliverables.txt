@@ -1,0 +1,254 @@
+NIDS v4.0 — Research Platform Upgrade Deliverables
+====================================================
+Author:  MD Saadman Kabir (ID: 25502701)
+Date:    April 2026
+Upgrade: v3.0 (engineering prototype) → v4.0 (research platform)
+
+
+WHAT THIS PROJECT IS
+--------------------
+A modular Python-based Network Intrusion Detection System (NIDS) that
+monitors live network traffic and blocks attackers via iptables.  Version
+4.0 transforms it from a working security tool into a research platform
+capable of supporting reproducible experiments, algorithm comparison, and
+academic evaluation.
+
+
+WHAT CHANGED AND WHY
+--------------------
+The core problem with v3.0 was that it could detect and block attacks, but
+it could not *prove* that its detection was good.  There was no way to
+measure accuracy, compare methods, or reproduce results.  Version 4.0 adds
+that capability without discarding any working functionality.
+
+
+UPGRADED DETECTORS (5 modules, all rewritten)
+----------------------------------------------
+
+1. PORT SCAN DETECTOR  (modules/portscan.py)
+   Was:   Fixed thresholds on unique ports and SYN packet counts.
+   Now:   Adds Shannon entropy analysis of the destination port distribution.
+          Scanning traffic accesses ports uniformly (high entropy).  Normal
+          traffic clusters on a few well-known ports (low entropy).  The
+          improved mode combines entropy with thresholds to catch low-and-slow
+          scans that stay just below individual thresholds.
+   Why:   Entropy-based scan detection is a known technique in the literature
+          but rarely combined with multi-strategy stealth detection (SYN,
+          Xmas, Null, FIN, ACK, UDP) in a single lightweight system.
+
+2. BRUTE FORCE DETECTOR  (modules/bruteforce.py)
+   Was:   Count failed logins within a time window, block when threshold hit.
+   Now:   Adds inter-arrival time (IAT) analysis.  Automated tools like Hydra
+          produce highly regular attempt spacing (low coefficient of variation).
+          Legitimate users mistyping passwords produce irregular spacing (high
+          CV).  The improved mode uses IAT regularity as an additional signal
+          to identify automated attacks earlier.
+   Why:   IAT analysis distinguishes tool-driven attacks from noisy but
+          harmless human errors, reducing false positives.
+
+3. DoS / FLOOD DETECTOR  (modules/dos.py)
+   Was:   Simple packets-per-second threshold on ICMP traffic.
+   Now:   Adds CUSUM (Cumulative Sum) change-point detection.  The detector
+          first calibrates a baseline traffic rate during an initial period,
+          then tracks cumulative deviation from that baseline.  Alarms when
+          the cumulative sum exceeds a decision threshold.
+   Why:   Simple thresholds miss gradual ramp-up attacks and false-positive on
+          legitimate traffic bursts.  CUSUM is a classical statistical method
+          that detects sustained shifts in traffic rate regardless of ramp
+          speed.
+
+4. SPOOF DETECTOR  (modules/spoof.py)
+   Was:   TTL anomaly check using simple mode-deviation (most common TTL vs
+          observed TTL, fixed deviation threshold).
+   Now:   Adds Z-score statistical modeling.  Tracks per-source TTL mean and
+          standard deviation over a rolling window.  Alerts when the Z-score
+          of a new observation exceeds a configurable threshold (default 2.5).
+          ARP poisoning detection and bogon filtering are preserved unchanged.
+   Why:   Mode-deviation is fragile — route changes and load balancers cause
+          legitimate TTL variation that triggers false positives.  Z-scores
+          adapt to each source's actual distribution and are mathematically
+          defensible.
+
+5. MAC FILTER  (modules/macfilter.py)
+   Was:   Whitelist/blacklist enforcement.
+   Now:   Same policy logic, but now emits structured feature context (MAC,
+          IP, filter mode, list membership) on every action.
+   Why:   This module is policy enforcement, not detection research.  The
+          change ensures it participates in the evaluation framework without
+          pretending to be something it is not.
+
+
+NEW RESEARCH INFRASTRUCTURE
+----------------------------
+
+modules/base.py
+   BaseDetector abstract class that all detectors inherit from.  Provides:
+   - Structured event recording (DetectionEvent objects with timestamps,
+     feature vectors, confidence scores, and method labels)
+   - Detect-only mode (alerts emitted but blocking suppressed)
+   - Baseline vs improved method switching
+   - Statistical utility functions: Shannon entropy, Z-score, rolling
+     mean/std, inter-arrival times, CUSUM step function
+
+engine.py  (rewritten)
+   Now instantiates detector classes instead of calling module-level
+   functions.  Every run carries:
+   - run_id:      unique identifier (timestamp + random suffix)
+   - config_hash: deterministic SHA-256 hash of the active config
+   - git_commit:  short hash of the current commit
+   These appear in every log record for traceability.
+
+config.py  (updated)
+   Added "research" section to configuration:
+   - detect_only:  true/false — suppresses iptables blocking
+   - method:       "baseline" or "improved" — selects detection algorithm
+   Added schema_version field for config format tracking.
+   Added ttl_z_threshold parameter for the spoof detector.
+
+research/metrics.py
+   ConfusionMatrix class that accumulates TP/FP/TN/FN and derives:
+   - Precision, Recall, F1 score, Accuracy, False Positive Rate
+   Also: detection_latency() to measure time from attack onset to first
+   alert, and compare_methods() for side-by-side baseline vs improved.
+
+research/analyzer.py
+   Post-run analysis script.  Loads a JSONL event log and a ground-truth
+   label file, matches detection events against labelled attack intervals,
+   computes per-detector confusion matrices and latency, and writes a
+   JSON report.
+
+research/scenarios.py
+   Scenario class for declarative experiment definitions:
+   - Which modules to enable and with what parameters
+   - Which detection method to use (baseline / improved)
+   - Duration, repetitions, config overrides
+   - Ground-truth labels for evaluation
+   Ships with 4 built-in templates: portscan comparison, DoS comparison,
+   spoof comparison, and full-system evaluation.
+
+research/runner.py
+   Experiment execution harness.  For each run:
+   1. Applies scenario config to the NIDS engine
+   2. Runs detection for the specified duration
+   3. Collects all structured events from all detectors
+   4. Saves everything to results/<scenario>/<run_id>/:
+      - config_snapshot.json  (exact config used)
+      - scenario.json         (scenario definition)
+      - events.jsonl          (all detection events)
+      - metadata.json         (run ID, timestamps, config hash, git commit)
+      - ground_truth.json     (if labels provided)
+   Supports repeated runs for statistical significance.
+
+results/
+   Output directory for experiment artefacts.  Gitignored so raw data
+   does not bloat the repository.
+
+
+GUI CHANGES  (gui.py)
+---------------------
+- Version bumped to 4.0.
+- New "Research Settings" group in Configuration tab:
+  - Detect-only checkbox (suppresses blocking for evaluation)
+  - Method selector dropdown (baseline / improved)
+- About tab updated to reflect research platform identity and list
+  the enhanced detection algorithms.
+- "Unblock All" button now calls engine.reset_detectors() instead of
+  reaching directly into module-level global variables.  This is cleaner
+  and works correctly with the new class-based detector architecture.
+
+
+WHAT STAYED THE SAME
+---------------------
+- All original detection logic runs identically in "baseline" mode.
+- Scapy packet sniffing, journalctl/log tailing, tcpdump sampling.
+- iptables chain management (NIDS_PORTSCAN, NIDS_BRUTEFORCE, etc.).
+- nftables ARP/L2 drop via arpnft.py.
+- Gateway whitelisting and safe-IP logic.
+- MAC address persistence and GUI review workflow.
+- Installer, launcher, desktop entries (version number updated).
+- firewall.py, netutil.py, arpnft.py, detected_mac_persist.py unchanged.
+
+
+HOW BASELINE vs IMPROVED WORKS
+-------------------------------
+Every detector supports two modes controlled by the "method" config field:
+
+  "baseline"  — runs the original v3.0 threshold logic unchanged.
+  "improved"  — runs the enhanced algorithm (entropy, CUSUM, Z-score, IAT).
+
+Both modes emit identical structured events with feature vectors and
+confidence scores.  This means you can run the same attack scenario twice
+(once baseline, once improved), collect the events, and compute precision/
+recall/F1 for each — producing a direct, fair comparison.
+
+
+HOW DETECT-ONLY MODE WORKS
+---------------------------
+When detect_only is true:
+  - Alerts are still emitted with full feature vectors
+  - Block decisions are still recorded as events
+  - But no iptables rules are actually created
+  - Log lines show [DETECT] instead of [BLOCK]
+
+This is essential for evaluation: you need the system to detect without
+interfering with the attack traffic, so you can measure what it would
+have caught vs what it missed.
+
+
+HOW TO RUN AN EXPERIMENT
+------------------------
+1. Set "research.method" to "baseline" in nids_config.json
+2. Set "research.detect_only" to true
+3. Start the NIDS
+4. Run the attack (e.g. nmap scan, Hydra brute force)
+5. Stop the NIDS
+6. Repeat steps 1-5 with method set to "improved"
+7. Run research/analyzer.py against both event logs with a ground-truth
+   file to get precision, recall, F1, and detection latency for each method
+
+Or use the experiment runner programmatically:
+   from research.runner import run_experiment
+   from research.scenarios import PORTSCAN_BASELINE_VS_IMPROVED
+   run_experiment(PORTSCAN_BASELINE_VS_IMPROVED)
+
+
+FILE INVENTORY
+--------------
+New files:
+  modules/base.py              BaseDetector + statistical utilities
+  research/__init__.py         Package marker (lab tooling)
+  research/metrics.py          Confusion matrix, P/R/F1, latency
+  research/analyzer.py         Post-run analysis
+  research/scenarios.py        Scenario definitions
+  research/runner.py           Experiment execution harness
+  results/.gitkeep             Output directory placeholder
+
+Rewritten files:
+  modules/portscan.py          PortScanDetector (entropy-augmented)
+  modules/bruteforce.py        BruteForceDetector (IAT analysis)
+  modules/dos.py               DoSDetector (CUSUM change-point)
+  modules/spoof.py             SpoofDetector (Z-score TTL)
+  modules/macfilter.py         MACFilterDetector (feature context)
+  engine.py                    Class-based orchestrator + research metadata
+  config.py                    Research config section + schema version
+  README.md                    Research platform framing
+
+Edited files:
+  gui.py                       v4.0 + research controls + cleaned unblock
+  nids_config.json             Research section + Z-score threshold
+  .gitignore                   Added results/
+  NIDS 4.0.desktop             Double-click app launcher; installer rewrites with absolute Icon= path
+
+Installer layout:
+  installer/install.sh         Full venv + pip + menu shortcut + launcher rewrite
+  installer/Install NIDS.desktop     Double-click runs install.sh in the same folder
+
+Unchanged files:
+  modules/firewall.py          Shared iptables helpers
+  modules/netutil.py           Network utility functions
+  modules/arpnft.py            nftables L2 drop
+  modules/detected_mac_persist.py  MAC persistence
+  requirements.txt             PyQt5 + Scapy (no new dependencies)
+  nids.sh                      Launcher script
+  hostbruteforce.txt           SSH start note
+  codebase.txt                 Testing reference

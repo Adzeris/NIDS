@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-Unified NIDS engine.
-Runs all enabled detection modules in parallel threads, with a shared
-stop_event for clean shutdown.
+NIDS engine v4.0 — research-aware central orchestrator.
+
+Instantiates class-based detectors, manages threads, and collects
+structured research events.  Each run carries:
+  - run_id        unique identifier
+  - config_hash   deterministic hash of the active config
+  - git_commit    short commit hash (if available)
 """
 
 import threading
@@ -13,25 +17,44 @@ import os
 import time
 import json
 import re
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import load_config
-from modules import bruteforce, dos, portscan, spoof, macfilter
+from modules.base import config_hash as _config_hash
+from modules.netutil import resolve_capture_interface
+
+from modules.portscan import PortScanDetector
+from modules.bruteforce import BruteForceDetector
+from modules.dos import DoSDetector
+from modules.spoof import SpoofDetector
+from modules.macfilter import MACFilterDetector
 
 
-DETECTORS = {
-    "portscan": portscan,
-    "bruteforce": bruteforce,
-    "dos": dos,
-    "spoof": spoof,
-    "macfilter": macfilter,
+DETECTOR_CLASSES = {
+    "portscan":   PortScanDetector,
+    "bruteforce": BruteForceDetector,
+    "dos":        DoSDetector,
+    "spoof":      SpoofDetector,
+    "macfilter":  MACFilterDetector,
 }
+
+
+def _git_commit():
+    try:
+        return subprocess.check_output(
+            ['git', 'rev-parse', '--short', 'HEAD'],
+            stderr=subprocess.DEVNULL, text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+        ).strip()
+    except Exception:
+        return 'unknown'
 
 
 class NIDSEngine:
     """
-    Central engine that manages detector threads and funnels their
+    Central engine that manages detector instances and funnels their
     log output through a single callback.
     """
 
@@ -41,9 +64,15 @@ class NIDSEngine:
         self.stop_event = threading.Event()
         self._shutdown_complete = False
         self.threads = {}
+        self.detectors = {}
         self._lock = threading.Lock()
         self._log_lines = []
         self._structured_records = []
+
+        # Research metadata
+        self.run_id = time.strftime('%Y%m%d_%H%M%S') + '_' + uuid.uuid4().hex[:6]
+        self.cfg_hash = _config_hash(self.cfg)
+        self.git_commit = _git_commit()
 
         log_dir = self.cfg["logging"]["log_dir"]
         os.makedirs(log_dir, exist_ok=True)
@@ -57,6 +86,8 @@ class NIDSEngine:
     def _default_log(self, msg):
         print(msg, flush=True)
 
+    # -- structured log parsing (backward-compatible) ----------------------
+
     _TAG_RE = re.compile(r'\[(\w+)\]')
     _IP_RE = re.compile(r'(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})')
     _MAC_RE = re.compile(r'([\dA-Fa-f]{2}(?::[\dA-Fa-f]{2}){5})')
@@ -67,10 +98,12 @@ class NIDSEngine:
         ip_m = self._IP_RE.search(msg)
         mac_m = self._MAC_RE.search(msg)
         action = "alert" if event_type == "ALERT" else (
-            "block" if event_type == "BLOCK" else (
+            "block" if event_type in ("BLOCK", "DETECT") else (
             "unblock" if event_type == "UNBLOCK" else "info"))
         return {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "run_id": self.run_id,
+            "config_hash": self.cfg_hash,
             "event_type": event_type,
             "source_ip": ip_m.group(1) if ip_m else None,
             "source_mac": mac_m.group(1).upper() if mac_m else None,
@@ -102,6 +135,8 @@ class NIDSEngine:
         except (RuntimeError, OSError):
             pass
 
+    # -- public accessors --------------------------------------------------
+
     def get_log_lines(self):
         with self._lock:
             return list(self._log_lines)
@@ -111,28 +146,64 @@ class NIDSEngine:
             return list(self._structured_records)
 
     def get_module_stats(self):
-        """Collect lightweight stats from each detector module."""
         result = {}
-        for name, mod in DETECTORS.items():
-            if hasattr(mod, 'stats'):
-                result[name] = dict(mod.stats)
+        for name, det in self.detectors.items():
+            result[name] = dict(det.stats)
         return result
 
+    def get_detector_events(self):
+        """Collect structured research events from all detector instances."""
+        events = []
+        for det in self.detectors.values():
+            events.extend(det.get_events())
+        events.sort(key=lambda e: e['timestamp'])
+        return events
+
+    def get_run_metadata(self):
+        return {
+            'run_id': self.run_id,
+            'config_hash': self.cfg_hash,
+            'git_commit': self.git_commit,
+            'method': self.cfg.get('research', {}).get('method', 'improved'),
+            'detect_only': self.cfg.get('research', {}).get('detect_only', False),
+        }
+
+    # -- engine lifecycle --------------------------------------------------
+
     def start(self):
-        """Start all enabled modules in background threads."""
-        enabled = self.cfg["modules"]
+        enabled = dict(self.cfg["modules"])
 
-        self._log(f"{_ts()} [ENGINE] Starting NIDS — interface: {self.cfg['interface']}")
+        requested_iface = self.cfg.get('interface', '')
+        resolved_iface, iface_note = resolve_capture_interface(requested_iface)
+        if resolved_iface:
+            self.cfg['interface'] = resolved_iface
+            if requested_iface != resolved_iface:
+                self.cfg_hash = _config_hash(self.cfg)
+        else:
+            # Modules that do packet capture cannot run without an interface.
+            for mod in ("portscan", "dos", "spoof", "macfilter"):
+                if enabled.get(mod, False):
+                    enabled[mod] = False
+            self._log(f"{_ts()} [WARN] {iface_note}; capture modules disabled")
 
-        for name, mod in DETECTORS.items():
+        if iface_note:
+            self._log(f"{_ts()} [WARN] {iface_note}")
+
+        self._log(f"{_ts()} [ENGINE] Starting NIDS v4.0 — interface: {self.cfg['interface']}")
+        self._log(f"{_ts()} [ENGINE] Run: {self.run_id}  config: {self.cfg_hash}")
+
+        for name, cls in DETECTOR_CLASSES.items():
             if not enabled.get(name, False):
-                self._log(f"{_ts()} [ENGINE] {name} is disabled, skipping")
+                if name != "macfilter":
+                    self._log(f"{_ts()} [ENGINE] {name} is disabled, skipping")
                 continue
 
-            mod.set_callback(self._log)
+            detector = cls(self.cfg, self.stop_event, self._log)
+            self.detectors[name] = detector
+
             t = threading.Thread(
-                target=self._run_module,
-                args=(name, mod),
+                target=self._run_detector,
+                args=(name, detector),
                 daemon=True,
                 name=f"nids-{name}",
             )
@@ -141,14 +212,22 @@ class NIDSEngine:
 
         self._log(f"{_ts()} [ENGINE] All modules launched ({len(self.threads)} active)")
 
-    def _run_module(self, name, mod):
+    def _run_detector(self, name, detector):
         try:
-            mod.run_detector(self.cfg, self.stop_event)
+            detector.run()
+        except OSError as e:
+            if getattr(e, "errno", None) == 19:
+                iface = self.cfg.get("interface", "unknown")
+                self._log(
+                    f"{_ts()} [ERROR] {name} crashed: interface '{iface}' is unavailable "
+                    "(No such device)."
+                )
+            else:
+                self._log(f"{_ts()} [ERROR] {name} crashed: {e}")
         except Exception as e:
             self._log(f"{_ts()} [ERROR] {name} crashed: {e}")
 
     def stop(self):
-        """Signal all modules to stop and wait for threads to finish."""
         self._log(f"{_ts()} [ENGINE] Shutting down...")
         self.stop_event.set()
 
@@ -171,8 +250,12 @@ class NIDSEngine:
             self._log_file = None
             self._jsonl_file = None
 
+    def reset_detectors(self):
+        """Reset all detector runtime state (used by GUI Unblock All)."""
+        for det in self.detectors.values():
+            det.reset_state()
+
     def flush_dns(self):
-        """Flush system DNS cache. Tries all known Linux resolvers."""
         resolvers = [
             (["systemd-resolve", "--flush-caches"], "systemd-resolved"),
             (["resolvectl", "flush-caches"],         "resolvectl"),

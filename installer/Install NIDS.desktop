@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Install NIDS
+Comment=Set up Python venv and add NIDS to your app menu.
+Exec=/bin/bash -c "exec \"\\$(dirname \"\\$(readlink -f \\\"%k\\\")\")/install.sh\""
+Terminal=true
+Categories=Utility;
+Keywords=install;nids;security;
+Icon=system-software-install

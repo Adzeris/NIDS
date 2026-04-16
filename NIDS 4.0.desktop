@@ -1,11 +1,12 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=NIDS v3.0
-Comment=Network Intrusion Detection System (v3.0)
+Name=NIDS 4.0
+Comment=Network Intrusion Detection System — Research Platform
 Exec=/home/kali/Desktop/nids_edit_metasploit/nids.sh
+Path=/home/kali/Desktop/nids_edit_metasploit
 Icon=/home/kali/Desktop/nids_edit_metasploit/icons/nids.png
 Terminal=false
-Categories=Network;Security;System;
-Keywords=firewall;intrusion;detection;network;security;metasploit;
+Categories=Network;
+Keywords=firewall;intrusion;detection;nids;
 StartupNotify=false

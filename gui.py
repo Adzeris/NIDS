@@ -22,9 +22,9 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF
 from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette, QPainter, QPen, QBrush
 
 from config import load_config, save_config
-from engine import NIDSEngine
+from modules.netutil import list_interfaces
 
-APP_VERSION = "3.0"
+APP_VERSION = "4.0"
 
 _MAC_MODE_UI_TO_CFG = {"Allow Only": "whitelist", "Block Only": "blacklist"}
 _MAC_MODE_CFG_TO_UI = {v: k for k, v in _MAC_MODE_UI_TO_CFG.items()}
@@ -44,6 +44,11 @@ class EngineWorker(QThread):
         self.engine = None
 
     def run(self):
+        # Import here so the GUI window can appear immediately. Importing engine
+        # pulls in all detectors and Scapy (~seconds on cold start) — v3 avoided
+        # that cost until the engine actually started.
+        from engine import NIDSEngine
+
         self.engine = NIDSEngine(cfg=self.cfg, log_callback=self._on_log)
         self.engine.start()
 
@@ -285,6 +290,7 @@ class MainWindow(QMainWindow):
         self._alert_count = 0
         self._block_count = 0
         self._dismissed_macs = set()
+        self._active_entry_keys = set()
 
         self.setWindowTitle(f"Network Intrusion Detection System — v{APP_VERSION}")
         self.setMinimumSize(960, 640)
@@ -340,7 +346,7 @@ class MainWindow(QMainWindow):
         self.start_btn.setObjectName("startBtn")
         self.start_btn.clicked.connect(self._start)
 
-        self.stop_btn = QPushButton("Stop NIDS")
+        self.stop_btn = QPushButton("Stop NIDS")  
         self.stop_btn.setObjectName("stopBtn")
         self.stop_btn.setEnabled(False)
         self.stop_btn.clicked.connect(self._stop)
@@ -419,7 +425,8 @@ class MainWindow(QMainWindow):
         btn_row.addWidget(clear_btn)
         lay.addLayout(btn_row)
 
-        self._rebuild_blocks_from_firewall()
+        # Defer: queries iptables/nft several times; don't block first paint.
+        QTimer.singleShot(0, self._rebuild_blocks_from_firewall)
 
         return w
 
@@ -440,9 +447,23 @@ class MainWindow(QMainWindow):
         iface_lay = QFormLayout(iface_grp)
         iface_lay.setVerticalSpacing(10)
         iface_lay.setContentsMargins(14, 20, 14, 14)
-        self.iface_edit = QLineEdit()
-        self.iface_edit.setMinimumHeight(30)
-        iface_lay.addRow("Interface:", self.iface_edit)
+        self.iface_combo = ClickFocusComboBox()
+        self.iface_combo.setMinimumHeight(30)
+        self.iface_refresh_btn = QPushButton("Refresh")
+        self.iface_refresh_btn.setMinimumHeight(30)
+        self.iface_refresh_btn.clicked.connect(lambda _=False: self._refresh_interface_options())
+        iface_row = QHBoxLayout()
+        iface_row.addWidget(self.iface_combo, 1)
+        iface_row.addWidget(self.iface_refresh_btn)
+        iface_row_w = QWidget()
+        iface_row_w.setLayout(iface_row)
+        iface_lay.addRow("Interface:", iface_row_w)
+
+        iface_hint = QLabel("Default: auto (recommended). Choose a detected interface if needed.")
+        iface_hint.setWordWrap(True)
+        iface_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
+        iface_lay.addRow(iface_hint)
+        self._refresh_interface_options(self.cfg.get("interface", "auto"))
         lay.addWidget(iface_grp)
 
         # Module toggles
@@ -454,9 +475,8 @@ class MainWindow(QMainWindow):
         self.chk_bruteforce = QCheckBox("SSH Brute-Force Detector")
         self.chk_dos = QCheckBox("DoS / ICMP Flood Detector")
         self.chk_spoof = QCheckBox("IP Spoof Detector")
-        self.chk_macfilter = QCheckBox("MAC Address Filter")
         for cb in [self.chk_portscan, self.chk_bruteforce, self.chk_dos,
-                   self.chk_spoof, self.chk_macfilter]:
+                   self.chk_spoof]:
             mod_lay.addWidget(cb)
         lay.addWidget(mod_grp)
 
@@ -705,13 +725,44 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(10, 10, 10, 10)
 
         mode_grp = QGroupBox("Filter Mode")
-        mode_lay = QHBoxLayout(mode_grp)
+        mode_grp_lay = QVBoxLayout(mode_grp)
+        mode_row = QHBoxLayout()
         self.mac_mode_combo = ClickFocusComboBox()
         self.mac_mode_combo.addItems(["Allow Only", "Block Only"])
-        mode_lay.addWidget(QLabel("Mode:"))
-        mode_lay.addWidget(self.mac_mode_combo)
-        mode_lay.addStretch()
+        mode_row.addWidget(QLabel("Mode:"))
+        mode_row.addWidget(self.mac_mode_combo)
+        mode_row.addStretch()
+        mode_grp_lay.addLayout(mode_row)
+
+        self.mac_mode_hint = QLabel()
+        self.mac_mode_hint.setWordWrap(True)
+        self.mac_mode_hint.setStyleSheet("color: #8b949e; font-size: 11px; margin-top: 4px;")
+        mode_grp_lay.addWidget(self.mac_mode_hint)
+
+        def _on_mac_mode_changed(_idx=None):
+            if self.mac_mode_combo.currentText() == "Allow Only":
+                self.mac_mode_hint.setText(
+                    "Allow Only (whitelist): Only devices in the Allowed MACs list can "
+                    "communicate. All other MAC addresses are automatically blocked."
+                )
+            else:
+                self.mac_mode_hint.setText(
+                    "Block Only (blacklist): All devices are allowed by default. "
+                    "Only MAC addresses in the Blocked MACs list are denied access."
+                )
+        self.mac_mode_combo.currentIndexChanged.connect(_on_mac_mode_changed)
+        _on_mac_mode_changed()
+
         lay.addWidget(mode_grp)
+
+        detect_note = QLabel(
+            "Detected MACs are collected by active detectors (e.g. Port Scan / Spoof). "
+            "This list is always populated for review; this tab controls MAC policy "
+            "(allow/block), not whether MACs are observed."
+        )
+        detect_note.setWordWrap(True)
+        detect_note.setStyleSheet("color: #8b949e; font-size: 11px;")
+        lay.addWidget(detect_note)
 
         # Detected / Pending Review
         det_grp = QGroupBox("Detected MACs (Pending Review)")
@@ -792,15 +843,14 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         lay.addWidget(title)
 
-        subtitle = QLabel(f"Network Intrusion Detection System\nv{APP_VERSION}")
+        subtitle = QLabel(f"Network Intrusion Detection System — v{APP_VERSION}")
         subtitle.setStyleSheet("font-size: 15px; color: #c9d1d9;")
         subtitle.setAlignment(Qt.AlignCenter)
         lay.addWidget(subtitle)
 
         lay.addSpacing(8)
 
-        desc = QLabel("A real-time intrusion detection and prevention system\n"
-                       "that monitors network traffic and automatically blocks threats via iptables.")
+        desc = QLabel("A modular NIDS research platform for evaluating and comparing network intrusion detection algorithms with reproducible experiments.")
         desc.setAlignment(Qt.AlignCenter)
         desc.setWordWrap(True)
         desc.setStyleSheet("font-size: 13px; color: #8b949e;")
@@ -808,25 +858,28 @@ class MainWindow(QMainWindow):
 
         lay.addSpacing(4)
 
-        modules_label = QLabel("Detection Modules")
+        modules_label = QLabel("Detection Modules (v2.0)")
         modules_label.setAlignment(Qt.AlignCenter)
         modules_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #58a6ff;")
         lay.addWidget(modules_label)
 
         modules = QLabel(
-            "Port Scan Detection — Scapy SYN analysis with per-source tracking\n"
-            "SSH Brute-Force Detection — journalctl monitoring for failed logins\n"
-            "DoS / ICMP Flood Detection — tcpdump sampling with pps thresholds\n"
-            "IP Spoof Detection — ARP poisoning, TTL anomaly & bogon/subnet validation\n"
-            "MAC Address Filtering — Allow Only / Block Only"
+            "Port Scan — Entropy-augmented multi-strategy (SYN, stealth, UDP)\n"
+            "Brute-Force — IAT temporal-pattern analysis (SSH + FTP)\n"
+            "DoS / Flood — CUSUM change-point detection (ICMP)\n"
+            "IP Spoof — Z-score TTL modeling + ARP + bogon (multi-signal)\n"
+            "MAC Filter — Policy enforcement with research instrumentation"
         )
         modules.setAlignment(Qt.AlignCenter)
         modules.setStyleSheet("font-size: 12px; color: #8b949e; line-height: 1.6;")
         lay.addWidget(modules)
 
+
         lay.addStretch()
 
-        author = QLabel("Made by MD Saadman Kabir")
+        author = QLabel("Made by MD Saadman Kabir\n"
+        		"ID: 25502701"
+        )
         author.setAlignment(Qt.AlignCenter)
         author.setStyleSheet("font-size: 13px; font-weight: bold; color: #73a9c2;")
         lay.addWidget(author)
@@ -845,8 +898,8 @@ class MainWindow(QMainWindow):
         mac = mac.strip().upper()
         lip = str(last_ip).strip().upper() if last_ip is not None else ""
         if last_ip and str(last_ip).strip() and lip not in ("N/A", "?"):
-            text = str(last_ip).strip()
-            tip_parts = [f"MAC {mac}"]
+            text = f"{mac}  ({str(last_ip).strip()})"
+            tip_parts = [f"MAC {mac}", f"IP {str(last_ip).strip()}"]
             if first_seen:
                 tip_parts.append(str(first_seen))
             tip = "\n".join(tip_parts)
@@ -966,9 +1019,33 @@ class MainWindow(QMainWindow):
 
     # ---- Config <-> UI ---------------------------------------------------
 
+    def _refresh_interface_options(self, preferred=None):
+        selected = (preferred or self.iface_combo.currentText().strip() or "auto").strip()
+        try:
+            detected = [i for i in list_interfaces() if i and i != "auto"]
+        except Exception:
+            detected = []
+        options = ["auto"] + detected
+        seen = set()
+        ordered = []
+        for opt in options:
+            if opt not in seen:
+                seen.add(opt)
+                ordered.append(opt)
+
+        self.iface_combo.blockSignals(True)
+        self.iface_combo.clear()
+        self.iface_combo.addItems(ordered)
+        if selected not in ordered:
+            selected = "auto"
+        idx = self.iface_combo.findText(selected)
+        if idx >= 0:
+            self.iface_combo.setCurrentIndex(idx)
+        self.iface_combo.blockSignals(False)
+
     def _load_config_to_ui(self):
         c = self.cfg
-        self.iface_edit.setText(c["interface"])
+        self._refresh_interface_options(c.get("interface", "auto"))
 
         mode = c.get("network_mode", "nat")
         self.netmode_combo.setCurrentIndex(0 if mode == "nat" else 1)
@@ -977,11 +1054,11 @@ class MainWindow(QMainWindow):
         self.host_ip_edit.setText(c["spoof"].get("host_ip", ""))
 
         m = c["modules"]
+        m.setdefault("macfilter", True)
         self.chk_portscan.setChecked(m["portscan"])
         self.chk_bruteforce.setChecked(m["bruteforce"])
         self.chk_dos.setChecked(m["dos"])
         self.chk_spoof.setChecked(m["spoof"])
-        self.chk_macfilter.setChecked(m["macfilter"])
 
         ps = c["portscan"]
         self.spin_ps_ports.setValue(ps["port_threshold"])
@@ -1043,7 +1120,7 @@ class MainWindow(QMainWindow):
 
     def _save_config_from_ui(self):
         c = self.cfg
-        c["interface"] = self.iface_edit.text().strip() or "eth0"
+        c["interface"] = self.iface_combo.currentText().strip() or "auto"
 
         is_bridged = self.netmode_combo.currentIndex() == 1
         c["network_mode"] = "bridged" if is_bridged else "nat"
@@ -1055,7 +1132,9 @@ class MainWindow(QMainWindow):
         c["modules"]["bruteforce"] = self.chk_bruteforce.isChecked()
         c["modules"]["dos"] = self.chk_dos.isChecked()
         c["modules"]["spoof"] = self.chk_spoof.isChecked()
-        c["modules"]["macfilter"] = self.chk_macfilter.isChecked()
+        # MAC detector module remains off in normal GUI runs to keep startup
+        # noise low; MAC detections still populate from other detectors.
+        c["modules"]["macfilter"] = False
 
         c["portscan"]["port_threshold"] = self.spin_ps_ports.value()
         c["portscan"]["syn_threshold"] = self.spin_ps_syns.value()
@@ -1089,6 +1168,12 @@ class MainWindow(QMainWindow):
             self.spoof_wl_list.item(i).text()
             for i in range(self.spoof_wl_list.count())
         ]
+
+        # Research options are hidden in UI; keep sane defaults without hard-overriding.
+        c.setdefault("research", {})
+        c["research"].setdefault("detect_only", False)
+        if c["research"].get("method") not in {"baseline", "improved"}:
+            c["research"]["method"] = "improved"
 
         c["macfilter"]["mode"] = _MAC_MODE_UI_TO_CFG.get(
             self.mac_mode_combo.currentText(), "whitelist"
@@ -1160,14 +1245,12 @@ class MainWindow(QMainWindow):
         from modules.firewall import flush_chain
         ts = time.strftime("%Y-%m-%d %H:%M:%S")
 
-        from modules.firewall import destroy_chain as _destroy
         for chain in ["NIDS_PORTSCAN", "NIDS_BRUTEFORCE", "NIDS_DOS", "NIDS_SPOOF", "NIDS_MACFILTER"]:
             flush_chain(chain)
         self._on_log_line(f"{ts} [ENGINE] All blocks cleared")
         from modules import arpnft
         arpnft.arp_flush_blocked()
 
-        # Also flush DNS cache
         resolvers = [
             (["systemd-resolve", "--flush-caches"], "systemd-resolved"),
             (["resolvectl", "flush-caches"],         "resolvectl"),
@@ -1185,36 +1268,15 @@ class MainWindow(QMainWindow):
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
 
-        # Clear all runtime state so detectors can re-detect
-        from modules import portscan, bruteforce, dos, spoof, macfilter
-        for mod in [portscan, bruteforce, dos, spoof, macfilter]:
-            if hasattr(mod, 'blocked_ips'):
-                mod.blocked_ips.clear()
-            if hasattr(mod, '_blocked_macs'):
-                mod._blocked_macs.clear()
-        portscan.seen_ports.clear()
-        portscan.seen_syns.clear()
-        portscan.slow_seen_ports.clear()
-        portscan.slow_seen_syns.clear()
-        portscan.udp_seen_ports.clear()
-        portscan.udp_seen_probes.clear()
-        bruteforce.failures_ssh.clear()
-        bruteforce.failures_ftp.clear()
-        gw_ip = spoof._gateway_ip
-        gw_mac = spoof.arp_table.get(gw_ip) if gw_ip else None
-        spoof.arp_table.clear()
-        if gw_ip and gw_mac:
-            spoof.arp_table[gw_ip] = gw_mac
-        spoof.arp_cooldowns.clear()
-        spoof.ttl_alert_cooldowns.clear()
-        spoof.ttl_alert_counts.clear()
-        spoof.blocked_macs.clear()
+        if self.worker and self.worker.engine:
+            self.worker.engine.reset_detectors()
 
         self.statusBar().showMessage("All blocks cleared + DNS flushed", 3000)
 
     _LOG_COLORS = {
         "ALERT":   "#f0883e",
         "BLOCK":   "#da3633",
+        "DETECT":  "#d29922",
         "UNBLOCK": "#39d353",
         "INFO":    "#8b949e",
         "START":   "#58a6ff",
@@ -1241,10 +1303,15 @@ class MainWindow(QMainWindow):
         if tag == "ALERT":
             self._alert_count += 1
             self.alert_label.setText(f"Alerts: {self._alert_count}")
+            self._add_active_block(line, state="DETECTED")
         if tag == "BLOCK":
             self._block_count += 1
             self.block_label.setText(f"Blocks: {self._block_count}")
-            self._add_active_block(line)
+            # Replace any existing DETECTED row for this target with BLOCKED.
+            self._remove_active_block(line)
+            self._add_active_block(line, state="BLOCKED")
+        if tag == "DETECT":
+            self._add_active_block(line, state="DETECTED")
         if tag == "UNBLOCK":
             self._remove_active_block(line)
         if "added to detected list for review" in line:
@@ -1254,12 +1321,15 @@ class MainWindow(QMainWindow):
             self._refresh_detected()
         if "All blocks cleared" in line:
             self.blocks_list.clear()
+            self._active_entry_keys.clear()
 
     _CHAIN_HINTS = {
         "port scan": "NIDS_PORTSCAN",
         "Port scan": "NIDS_PORTSCAN",
+        "Stealth": "NIDS_PORTSCAN",
         "Slow": "NIDS_PORTSCAN",
         "Brute force": "NIDS_BRUTEFORCE",
+        "Brute-force": "NIDS_BRUTEFORCE",
         "DoS": "NIDS_DOS",
         "flood": "NIDS_DOS",
         "spoof": "NIDS_SPOOF",
@@ -1276,23 +1346,29 @@ class MainWindow(QMainWindow):
                 return chain
         return None
 
-    def _add_active_block(self, line):
+    def _add_active_block(self, line, state="BLOCKED"):
         import re as _re
-        ip_m = _re.search(r'Blocked\s+(\d+\.\d+\.\d+\.\d+)', line)
+        ip_m = _re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
         mac_m = _re.search(r'(?:Blocked.*MAC|MAC)\s+([\dA-Fa-f:]{17})', line, _re.IGNORECASE)
         ts_str = time.strftime("%H:%M:%S")
         chain = self._infer_chain(line)
 
         if mac_m:
             target = mac_m.group(1).upper()
-            label = f"MAC {target}  [{ts_str}]  {chain or ''}"
-            meta = {"type": "mac", "target": target, "chain": chain}
+            label = f"MAC {target}  [{ts_str}]  {chain or ''}  {state}"
+            meta = {"type": "mac", "target": target, "chain": chain, "state": state}
         elif ip_m:
             target = ip_m.group(1)
-            label = f"IP  {target}  [{ts_str}]  {chain or ''}"
-            meta = {"type": "ip", "target": target, "chain": chain}
+            label = f"IP  {target}  [{ts_str}]  {chain or ''}  {state}"
+            meta = {"type": "ip", "target": target, "chain": chain, "state": state}
         else:
             return
+
+        entry_key = (meta["type"], meta["target"], meta.get("chain"), meta.get("state"))
+        if entry_key in self._active_entry_keys:
+            return
+        self._active_entry_keys.add(entry_key)
+
         item = QListWidgetItem(label)
         item.setData(Qt.UserRole, meta)
         self.blocks_list.addItem(item)
@@ -1311,8 +1387,15 @@ class MainWindow(QMainWindow):
         for i in range(self.blocks_list.count() - 1, -1, -1):
             meta = self.blocks_list.item(i).data(Qt.UserRole)
             if meta and meta.get("target") == target:
+                self._active_entry_keys.discard(
+                    (meta.get("type"), meta.get("target"), meta.get("chain"), meta.get("state"))
+                )
                 self.blocks_list.takeItem(i)
             elif target in self.blocks_list.item(i).text():
+                if meta:
+                    self._active_entry_keys.discard(
+                        (meta.get("type"), meta.get("target"), meta.get("chain"), meta.get("state"))
+                    )
                 self.blocks_list.takeItem(i)
 
     def _unblock_selected(self):
@@ -1339,6 +1422,10 @@ class MainWindow(QMainWindow):
                         unblock_mac(c, meta["target"])
                     from modules import arpnft
                     arpnft.arp_unblock_mac(meta["target"])
+            if meta:
+                self._active_entry_keys.discard(
+                    (meta.get("type"), meta.get("target"), meta.get("chain"), meta.get("state"))
+                )
             self.blocks_list.takeItem(self.blocks_list.row(item))
         self.statusBar().showMessage("Selected blocks removed", 3000)
 
@@ -1348,6 +1435,7 @@ class MainWindow(QMainWindow):
         from modules import arpnft
 
         self.blocks_list.clear()
+        self._active_entry_keys.clear()
         chain_ip_map = {
             "NIDS_PORTSCAN": "portscan",
             "NIDS_BRUTEFORCE": "bruteforce",
@@ -1365,9 +1453,11 @@ class MainWindow(QMainWindow):
                 if key in seen_ips:
                     continue
                 seen_ips.add(key)
-                label = f"IP  {ip}  [{module}]  {chain}"
+                label = f"IP  {ip}  [{module}]  {chain}  BLOCKED"
                 item = QListWidgetItem(label)
-                item.setData(Qt.UserRole, {"type": "ip", "target": ip, "chain": chain})
+                meta = {"type": "ip", "target": ip, "chain": chain, "state": "BLOCKED"}
+                item.setData(Qt.UserRole, meta)
+                self._active_entry_keys.add(("ip", ip, chain, "BLOCKED"))
                 self.blocks_list.addItem(item)
 
         seen_macs = set()
@@ -1377,9 +1467,11 @@ class MainWindow(QMainWindow):
                 if key in seen_macs:
                     continue
                 seen_macs.add(key)
-                label = f"MAC {mac}  [{module}]  {chain}"
+                label = f"MAC {mac}  [{module}]  {chain}  BLOCKED"
                 item = QListWidgetItem(label)
-                item.setData(Qt.UserRole, {"type": "mac", "target": mac, "chain": chain})
+                meta = {"type": "mac", "target": mac, "chain": chain, "state": "BLOCKED"}
+                item.setData(Qt.UserRole, meta)
+                self._active_entry_keys.add(("mac", mac, chain, "BLOCKED"))
                 self.blocks_list.addItem(item)
 
         for mac in arpnft.arp_list_blocked():
@@ -1389,7 +1481,9 @@ class MainWindow(QMainWindow):
             ):
                 label = f"MAC {mac}  [nftables]  netdev"
                 item = QListWidgetItem(label)
-                item.setData(Qt.UserRole, {"type": "mac", "target": mac, "chain": None})
+                meta = {"type": "mac", "target": mac, "chain": None, "state": "BLOCKED"}
+                item.setData(Qt.UserRole, meta)
+                self._active_entry_keys.add(("mac", mac, None, "BLOCKED"))
                 self.blocks_list.addItem(item)
 
         count = self.blocks_list.count()

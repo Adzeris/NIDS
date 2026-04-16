@@ -1,5 +1,6 @@
 {
-  "interface": "eth0",
+  "schema_version": "4.0",
+  "interface": "auto",
   "network_mode": "nat",
   "modules": {
     "portscan": true,
@@ -7,6 +8,10 @@
     "dos": true,
     "spoof": true,
     "macfilter": false
+  },
+  "research": {
+    "detect_only": false,
+    "method": "improved"
   },
   "portscan": {
     "window_sec": 5,
@@ -38,6 +43,7 @@
     "host_ip": "",
     "arp_alert_cooldown": 60,
     "ttl_deviation": 20,
+    "ttl_z_threshold": 2.5,
     "ttl_min_samples": 20,
     "ttl_alert_cooldown": 120,
     "ttl_max_alerts_per_source": 3,
@@ -51,14 +57,14 @@
     "blocked_macs": [],
     "detected_macs": [
       {
-        "mac": "00:50:56:FF:6B:DC",
-        "last_ip": "?",
-        "first_seen": "2026-04-05 02:22:07"
+        "mac": "00:0C:29:AD:13:B7",
+        "last_ip": "192.168.92.129",
+        "first_seen": "2026-04-16 04:20:32"
       },
       {
-        "mac": "00:0C:29:AD:13:B7",
+        "mac": "00:50:56:FF:6B:DC",
         "last_ip": "192.168.92.2",
-        "first_seen": "2026-04-11 22:26:32"
+        "first_seen": "2026-04-16 12:37:20"
       }
     ]
   },

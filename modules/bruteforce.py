@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
 """
-Brute-force detector — SSH (journalctl) + FTP (auth log / vsftpd log).
-Both watchers feed into a shared per-IP failure tracker with independent
-thresholds per service.
+Brute-force detector v2.0 — temporal-pattern-augmented authentication attack detection.
+
+Detection strategies:
+  Baseline (count-threshold): alert when failure count exceeds threshold
+                              within a sliding time window.
+  Improved (IAT-augmented):   additionally analyse inter-arrival times of
+      failure events.  Automated tools (Hydra, Medusa) produce highly regular
+      attempt spacing (low coefficient of variation) while legitimate users
+      failing passwords produce irregular spacing (high CV).  The combined
+      signal catches automated attacks earlier and with higher confidence.
+
+Services: SSH (journalctl) + FTP (auth/vsftpd/proftpd logs).
+
+Research features:
+  - Per-alert feature vectors (failure_count, mean_iat, cv_iat, burst_score, ...)
+  - Confidence scoring
+  - Baseline / improved mode switching
+  - Detect-only mode
 """
 
 import time
@@ -13,227 +28,292 @@ import os
 import threading
 from collections import defaultdict
 
+from modules.base import BaseDetector, inter_arrival_times, rolling_stats
 from modules.firewall import ensure_chain, flush_chain, block_ip, ts
 from modules.netutil import get_default_gateway
 
-CHAIN = "NIDS_BRUTEFORCE"
 
-failures_ssh = defaultdict(list)
-failures_ftp = defaultdict(list)
-blocked_ips = set()
-_safe_ips = set()
-stats = {"ssh_lines": 0, "ftp_lines": 0, "blocks": 0}
+class BruteForceDetector(BaseDetector):
 
+    NAME = 'bruteforce'
+    VERSION = '2.0'
+    CHAIN = 'NIDS_BRUTEFORCE'
+
+    _SSH_IP_RE = re.compile(r'from (\d+\.\d+\.\d+\.\d+)')
+    _FTP_FAIL_PATTERNS = [
+        re.compile(r'FAIL LOGIN.*?(?:client\s+"?)(\d+\.\d+\.\d+\.\d+)'),
+        re.compile(r'vsftpd.*authentication failure.*rhost=(\d+\.\d+\.\d+\.\d+)'),
+        re.compile(r'proftpd.*no such user.*?\[(\d+\.\d+\.\d+\.\d+)\]'),
+        re.compile(r'proftpd.*Login failed.*?\[(\d+\.\d+\.\d+\.\d+)\]'),
+        re.compile(r'pam_unix\(.*ftpd.*\).*authentication failure.*rhost=(\d+\.\d+\.\d+\.\d+)'),
+        re.compile(r'pure-ftpd.*Authentication failed.*?(\d+\.\d+\.\d+\.\d+)'),
+        re.compile(r'Unable to Connect.*?(\d+\.\d+\.\d+\.\d+)'),
+    ]
+    _FTP_LOG_PATHS = [
+        "/var/log/vsftpd.log", "/var/log/auth.log",
+        "/var/log/proftpd/proftpd.log", "/var/log/syslog",
+    ]
+
+    def __init__(self, cfg, stop_event, log_callback=None):
+        super().__init__(cfg, stop_event, log_callback)
+
+        self.failures_ssh = defaultdict(list)  # ip -> [timestamps]
+        self.failures_ftp = defaultdict(list)
+        self.blocked_ips = set()
+        self._safe_ips = set()
+        self._block_lock = threading.Lock()
+
+        self.stats = {'ssh_lines': 0, 'ftp_lines': 0, 'blocks': 0}
+
+    # -- safe-IP logic -----------------------------------------------------
+
+    def _build_safe_ips(self):
+        cfg = self.cfg
+        iface = cfg['interface']
+        safe = {'0.0.0.0', '255.255.255.255'}
+        if cfg.get('network_mode', 'nat') == 'bridged':
+            gw = get_default_gateway(iface)
+            if gw and cfg.get('spoof', {}).get('gateway_auto_whitelist', True):
+                safe.add(gw)
+            host = cfg.get('spoof', {}).get('host_ip', '').strip()
+            if cfg.get('spoof', {}).get('whitelist_host') and host:
+                safe.add(host)
+        for ip_str in cfg.get('spoof', {}).get('whitelist_ips', []):
+            safe.add(ip_str.strip())
+        return safe
+
+    # -- feature extraction ------------------------------------------------
+
+    def _iat_features(self, timestamps, service):
+        iats = inter_arrival_times(sorted(timestamps))
+        if not iats:
+            return {'service': service, 'iat_count': 0}
+
+        mean_iat, std_iat = rolling_stats(iats)
+        cv_iat = std_iat / mean_iat if mean_iat > 0 else 0.0
+        min_iat = min(iats)
+        failure_rate = len(timestamps) / max(timestamps[-1] - timestamps[0], 0.01)
+
+        return {
+            'service': service,
+            'failure_count': len(timestamps),
+            'iat_count': len(iats),
+            'mean_iat': round(mean_iat, 4),
+            'std_iat': round(std_iat, 4),
+            'cv_iat': round(cv_iat, 4),
+            'min_iat': round(min_iat, 4),
+            'failure_rate': round(failure_rate, 2),
+        }
+
+    def _confidence(self, feat, threshold, window):
+        c_count = min(1.0, feat.get('failure_count', 0) / max(threshold, 1))
+
+        if self.method == 'improved' and feat.get('iat_count', 0) >= 2:
+            # Low CV = regular spacing = automated tool = higher confidence
+            cv = feat.get('cv_iat', 1.0)
+            c_automation = max(0.0, 1.0 - cv) if cv < 1.5 else 0.0
+            conf = 0.60 * c_count + 0.40 * c_automation
+        else:
+            conf = c_count
+        return round(min(1.0, conf), 4)
+
+    # -- shared alert/block ------------------------------------------------
+
+    def _try_block(self, ip, service, timestamps, threshold, window):
+        with self._block_lock:
+            if ip in self.blocked_ips:
+                return
+
+            feat = self._iat_features(timestamps, service)
+            conf = self._confidence(feat, threshold, window)
+            feat['confidence'] = conf
+
+            if self.method == 'baseline':
+                triggered = len(timestamps) >= threshold
+            else:
+                triggered = len(timestamps) >= threshold
+                if not triggered:
+                    # Automated tool signature: many attempts with very regular spacing
+                    triggered = (len(timestamps) >= max(threshold // 2, 3)
+                                 and conf >= 0.75
+                                 and feat.get('cv_iat', 1.0) < 0.3)
+
+            if not triggered:
+                return
+
+            msg = (f"{service} brute force from {ip} "
+                   f"({feat['failure_count']} attempts in {window}s"
+                   f", cv_iat={feat.get('cv_iat', 'N/A')})")
+            self.alert(message=msg, source_ip=ip, confidence=conf,
+                       features=feat)
+
+            if ip in self._safe_ips:
+                self.warn(f"{ip} is gateway/whitelisted — alert only")
+            else:
+                blocked = self.block(
+                    target=ip, reason=f"{service} brute force",
+                    source_ip=ip, confidence=conf, features=feat,
+                    do_block_fn=lambda: block_ip(self.CHAIN, ip),
+                )
+                if blocked:
+                    self.blocked_ips.add(ip)
+                    self.stats['blocks'] += 1
+
+    # -- SSH watcher -------------------------------------------------------
+
+    def _process_ssh_line(self, line):
+        self.stats['ssh_lines'] += 1
+        if 'Failed password' not in line:
+            return
+
+        m = self._SSH_IP_RE.search(line)
+        if not m:
+            return
+
+        ip = m.group(1)
+        now = time.time()
+        if ip in self.blocked_ips:
+            return
+
+        threshold = self.cfg['bruteforce']['threshold']
+        window = self.cfg['bruteforce']['window_sec']
+
+        self.failures_ssh[ip].append(now)
+        self.failures_ssh[ip] = [t for t in self.failures_ssh[ip]
+                                 if now - t <= window]
+
+        self._try_block(ip, 'SSH', self.failures_ssh[ip], threshold, window)
+        if ip in self.blocked_ips:
+            self.failures_ssh[ip].clear()
+
+    def _ssh_watcher(self):
+        cmd = ["journalctl", "-u", "ssh", "-f", "-n", "0"]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+        try:
+            while not self.stop_event.is_set():
+                ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+                if ready:
+                    line = proc.stdout.readline()
+                    if line:
+                        self._process_ssh_line(line)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=3)
+
+    # -- FTP watcher -------------------------------------------------------
+
+    def _process_ftp_line(self, line):
+        self.stats['ftp_lines'] += 1
+        ip = None
+        for pat in self._FTP_FAIL_PATTERNS:
+            m = pat.search(line)
+            if m:
+                ip = m.group(1)
+                break
+        if not ip:
+            return
+
+        now = time.time()
+        if ip in self.blocked_ips:
+            return
+
+        threshold = self.cfg['bruteforce'].get('ftp_threshold', 5)
+        window = self.cfg['bruteforce'].get('ftp_window_sec', 60)
+
+        self.failures_ftp[ip].append(now)
+        self.failures_ftp[ip] = [t for t in self.failures_ftp[ip]
+                                 if now - t <= window]
+
+        self._try_block(ip, 'FTP', self.failures_ftp[ip], threshold, window)
+        if ip in self.blocked_ips:
+            self.failures_ftp[ip].clear()
+
+    def _ftp_watcher(self):
+        log_path = None
+        for p in self._FTP_LOG_PATHS:
+            if os.path.exists(p):
+                log_path = p
+                break
+
+        if not log_path:
+            self.info("FTP brute-force: no FTP log found, using journalctl fallback")
+            cmd = ["journalctl", "-t", "vsftpd", "-t", "proftpd",
+                   "-t", "pure-ftpd", "-f", "-n", "0"]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL, text=True)
+            try:
+                while not self.stop_event.is_set():
+                    ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+                    if ready:
+                        line = proc.stdout.readline()
+                        if line:
+                            self._process_ftp_line(line)
+            finally:
+                proc.terminate()
+                proc.wait(timeout=3)
+            return
+
+        self.info(f"FTP brute-force: monitoring {log_path}")
+        cmd = ["tail", "-F", "-n", "0", log_path]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+        try:
+            while not self.stop_event.is_set():
+                ready, _, _ = select.select([proc.stdout], [], [], 1.0)
+                if ready:
+                    line = proc.stdout.readline()
+                    if line:
+                        self._process_ftp_line(line)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=3)
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def reset_state(self):
+        self.failures_ssh.clear()
+        self.failures_ftp.clear()
+        self.blocked_ips.clear()
+        for k in self.stats:
+            self.stats[k] = 0
+
+    def run(self):
+        self._safe_ips = self._build_safe_ips()
+        self.reset_state()
+        ensure_chain(self.CHAIN)
+        flush_chain(self.CHAIN)
+
+        self._emit(f"[START] Brute-force detector v{self.VERSION} (SSH + FTP)")
+
+        ftp_thread = threading.Thread(
+            target=self._ftp_watcher, daemon=True, name='nids-bf-ftp')
+        ftp_thread.start()
+
+        try:
+            self._ssh_watcher()
+        finally:
+            if self.stop_event:
+                self.stop_event.set()
+            ftp_thread.join(timeout=4)
+            flush_chain(self.CHAIN)
+            self._emit("[STOP] Brute-force detector stopped")
+
+
+# ---------------------------------------------------------------------------
+# Module-level compatibility
+# ---------------------------------------------------------------------------
 _callback = None
-_lock = threading.Lock()
-
+stats = {"ssh_lines": 0, "ftp_lines": 0, "blocks": 0}
 
 def set_callback(fn):
     global _callback
     _callback = fn
 
-
-def _emit(msg):
-    line = f"{ts()} {msg}"
-    if _callback:
-        _callback(line)
-    else:
-        print(line, flush=True)
-
-
-def _try_block(ip, service, count, window):
-    with _lock:
-        if ip in blocked_ips:
-            return
-        _emit(f"[ALERT] {service} brute force from {ip} ({count} attempts in {window}s)")
-        if ip in _safe_ips:
-            _emit(f"[WARN] {ip} is the gateway/whitelisted — alerting only (blocking would break connectivity)")
-        else:
-            block_ip(CHAIN, ip)
-            blocked_ips.add(ip)
-            stats["blocks"] += 1
-            _emit(f"[BLOCK] Blocked {ip}")
-
-
-# ---- SSH watcher ---------------------------------------------------------
-
-_SSH_IP_RE = re.compile(r'from (\d+\.\d+\.\d+\.\d+)')
-
-def _process_ssh_line(line, cfg):
-    stats["ssh_lines"] += 1
-    if "Failed password" not in line:
-        return
-
-    m = _SSH_IP_RE.search(line)
-    if not m:
-        return
-
-    ip = m.group(1)
-    now = time.time()
-
-    if ip in blocked_ips:
-        return
-
-    threshold = cfg["bruteforce"]["threshold"]
-    window = cfg["bruteforce"]["window_sec"]
-
-    failures_ssh[ip].append(now)
-    failures_ssh[ip] = [t for t in failures_ssh[ip] if now - t <= window]
-
-    if len(failures_ssh[ip]) >= threshold:
-        _try_block(ip, "SSH", len(failures_ssh[ip]), window)
-        failures_ssh[ip].clear()
-
-
-def _ssh_watcher(cfg, stop_event):
-    cmd = ["journalctl", "-u", "ssh", "-f", "-n", "0"]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
-
-    try:
-        while stop_event is None or not stop_event.is_set():
-            ready, _, _ = select.select([proc.stdout], [], [], 1.0)
-            if ready:
-                line = proc.stdout.readline()
-                if not line:
-                    continue
-                _process_ssh_line(line, cfg)
-    finally:
-        proc.terminate()
-        proc.wait(timeout=3)
-
-
-# ---- FTP watcher ---------------------------------------------------------
-
-_FTP_FAIL_PATTERNS = [
-    re.compile(r'FAIL LOGIN.*?(?:client\s+\"?)(\d+\.\d+\.\d+\.\d+)'),
-    re.compile(r'vsftpd.*authentication failure.*rhost=(\d+\.\d+\.\d+\.\d+)'),
-    re.compile(r'proftpd.*no such user.*?\[(\d+\.\d+\.\d+\.\d+)\]'),
-    re.compile(r'proftpd.*Login failed.*?\[(\d+\.\d+\.\d+\.\d+)\]'),
-    re.compile(r'pam_unix\(.*ftpd.*\).*authentication failure.*rhost=(\d+\.\d+\.\d+\.\d+)'),
-    re.compile(r'pure-ftpd.*Authentication failed.*?(\d+\.\d+\.\d+\.\d+)'),
-    re.compile(r'Unable to Connect.*?(\d+\.\d+\.\d+\.\d+)'),
-]
-
-_FTP_LOG_PATHS = [
-    "/var/log/vsftpd.log",
-    "/var/log/auth.log",
-    "/var/log/proftpd/proftpd.log",
-    "/var/log/syslog",
-]
-
-
-def _process_ftp_line(line, cfg):
-    stats["ftp_lines"] += 1
-
-    ip = None
-    for pat in _FTP_FAIL_PATTERNS:
-        m = pat.search(line)
-        if m:
-            ip = m.group(1)
-            break
-
-    if not ip:
-        return
-
-    now = time.time()
-    if ip in blocked_ips:
-        return
-
-    threshold = cfg["bruteforce"].get("ftp_threshold", 5)
-    window = cfg["bruteforce"].get("ftp_window_sec", 60)
-
-    failures_ftp[ip].append(now)
-    failures_ftp[ip] = [t for t in failures_ftp[ip] if now - t <= window]
-
-    if len(failures_ftp[ip]) >= threshold:
-        _try_block(ip, "FTP", len(failures_ftp[ip]), window)
-        failures_ftp[ip].clear()
-
-
-def _ftp_watcher(cfg, stop_event):
-    log_path = None
-    for p in _FTP_LOG_PATHS:
-        if os.path.exists(p):
-            log_path = p
-            break
-
-    if not log_path:
-        _emit("[INFO] FTP brute-force: no FTP log found, using journalctl fallback")
-        cmd = ["journalctl", "-t", "vsftpd", "-t", "proftpd", "-t", "pure-ftpd", "-f", "-n", "0"]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-        try:
-            while stop_event is None or not stop_event.is_set():
-                ready, _, _ = select.select([proc.stdout], [], [], 1.0)
-                if ready:
-                    line = proc.stdout.readline()
-                    if line:
-                        _process_ftp_line(line, cfg)
-        finally:
-            proc.terminate()
-            proc.wait(timeout=3)
-        return
-
-    _emit(f"[INFO] FTP brute-force: monitoring {log_path}")
-    cmd = ["tail", "-F", "-n", "0", log_path]
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-
-    try:
-        while stop_event is None or not stop_event.is_set():
-            ready, _, _ = select.select([proc.stdout], [], [], 1.0)
-            if ready:
-                line = proc.stdout.readline()
-                if line:
-                    _process_ftp_line(line, cfg)
-    finally:
-        proc.terminate()
-        proc.wait(timeout=3)
-
-
-# ---- Main entry point ----------------------------------------------------
-
-def _build_safe_ips(cfg, iface):
-    safe = {"0.0.0.0", "255.255.255.255"}
-    if cfg.get("network_mode", "nat") == "bridged":
-        gw = get_default_gateway(iface)
-        if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
-            safe.add(gw)
-        if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
-            safe.add(cfg["spoof"]["host_ip"].strip())
-    for ip_str in cfg.get("spoof", {}).get("whitelist_ips", []):
-        safe.add(ip_str.strip())
-    return safe
-
-
 def run_detector(cfg, stop_event=None):
-    """Start SSH + FTP watchers. Runs until stop_event is set."""
-    global _safe_ips
-    failures_ssh.clear()
-    failures_ftp.clear()
-    blocked_ips.clear()
-    _safe_ips = _build_safe_ips(cfg, cfg["interface"])
-    stats["ssh_lines"] = 0
-    stats["ftp_lines"] = 0
-    stats["blocks"] = 0
-
-    ensure_chain(CHAIN)
-    flush_chain(CHAIN)
-    _emit("[START] Brute-force detector running (SSH + FTP)")
-
-    ftp_thread = threading.Thread(
-        target=_ftp_watcher, args=(cfg, stop_event),
-        daemon=True, name="nids-bf-ftp",
-    )
-    ftp_thread.start()
-
-    try:
-        _ssh_watcher(cfg, stop_event)
-    finally:
-        if stop_event:
-            stop_event.set()
-        ftp_thread.join(timeout=4)
-        flush_chain(CHAIN)
-        _emit("[STOP] Brute-force detector stopped")
-
+    import threading as _t
+    det = BruteForceDetector(cfg, stop_event or _t.Event(), _callback)
+    det.run()
+    stats.update(det.stats)
 
 if __name__ == "__main__":
     import sys, os

@@ -1,327 +1,357 @@
 #!/usr/bin/env python3
 """
-TCP port-scan detector (SYN + stealth) + UDP probe detector.
-Uses Scapy to sniff for rapid probes across many ports and blocks scanners.
+Port scan detector v2.0 — entropy-augmented multi-strategy detection.
 
-Stealth scan detection covers:
-  - Xmas  (FIN+PSH+URG)
-  - Null   (no flags)
-  - FIN    (FIN only)
-  - ACK    (ACK only, to many ports = mapping scan)
+Detection strategies:
+  Baseline (threshold-only):  alert when unique ports AND probe count both
+                              exceed fixed thresholds in a sliding window.
+  Improved (entropy-augmented): additionally compute Shannon entropy of the
+      destination-port distribution.  Scanning produces high entropy (uniform
+      access across ports) while normal traffic clusters on a few well-known
+      ports (low entropy).  A weighted confidence score combines port count,
+      probe count, and entropy to catch low-and-slow scans that stay just
+      below individual thresholds.
+
+Scan types: TCP SYN, Stealth (Xmas/Null/FIN/ACK), UDP probes — each with
+fast and slow detection windows.
+
+Research features:
+  - Per-alert feature vectors (unique_ports, probe_count, port_entropy, ...)
+  - Confidence scoring
+  - Baseline / improved mode switching
+  - Detect-only mode
 """
 
 from scapy.all import sniff, IP, TCP, UDP, Ether
 import time
-from collections import defaultdict, deque
+import math
+from collections import defaultdict, deque, Counter
 
-from modules.firewall import ensure_chain, flush_chain, block_ip, run, ts
+from modules.base import BaseDetector, shannon_entropy
+from modules.firewall import ensure_chain, flush_chain, block_ip
 from modules.netutil import get_interface_ip, get_default_gateway
 from modules.detected_mac_persist import persist as persist_detected_mac
 
-CHAIN = "NIDS_PORTSCAN"
 
-# TCP SYN tracking
-seen_ports = defaultdict(deque)
-seen_syns = defaultdict(deque)
-slow_seen_ports = defaultdict(deque)
-slow_seen_syns = defaultdict(deque)
+class PortScanDetector(BaseDetector):
 
-# Stealth scan tracking (Xmas / Null / FIN / ACK)
-stealth_seen_ports = defaultdict(deque)
-stealth_seen_probes = defaultdict(deque)
-slow_stealth_seen_ports = defaultdict(deque)
-slow_stealth_seen_probes = defaultdict(deque)
+    NAME = 'portscan'
+    VERSION = '2.0'
+    CHAIN = 'NIDS_PORTSCAN'
 
-# UDP tracking
-udp_seen_ports = defaultdict(deque)
-udp_seen_probes = defaultdict(deque)
+    _STEALTH_FLAGS = frozenset({"", "F", "FPU", "A"})
+    _STEALTH_LABEL = {"": "Null", "F": "FIN", "FPU": "Xmas", "A": "ACK"}
 
-blocked_ips = set()
+    def __init__(self, cfg, stop_event, log_callback=None):
+        super().__init__(cfg, stop_event, log_callback)
 
+        self._defense_ip = None
+        self._safe_ips = set()
+        self._start_time = None
+
+        self.syn_ports = defaultdict(deque)
+        self.syn_times = defaultdict(deque)
+        self.slow_syn_ports = defaultdict(deque)
+        self.slow_syn_times = defaultdict(deque)
+
+        self.stealth_ports = defaultdict(deque)
+        self.stealth_times = defaultdict(deque)
+        self.slow_stealth_ports = defaultdict(deque)
+        self.slow_stealth_times = defaultdict(deque)
+
+        self.udp_ports = defaultdict(deque)
+        self.udp_times = defaultdict(deque)
+
+        self.blocked_ips = set()
+        self.stats = {
+            'syn_packets': 0, 'stealth_packets': 0,
+            'udp_packets': 0, 'blocks': 0,
+        }
+
+    # -- helpers -----------------------------------------------------------
+
+    def _build_safe_ips(self):
+        cfg = self.cfg
+        iface = cfg['interface']
+        safe = {'0.0.0.0', '255.255.255.255'}
+        if cfg.get('network_mode', 'nat') == 'bridged':
+            gw = get_default_gateway(iface)
+            if gw and cfg.get('spoof', {}).get('gateway_auto_whitelist', True):
+                safe.add(gw)
+            host = cfg.get('spoof', {}).get('host_ip', '').strip()
+            if cfg.get('spoof', {}).get('whitelist_host') and host:
+                safe.add(host)
+        for ip_str in cfg.get('spoof', {}).get('whitelist_ips', []):
+            safe.add(ip_str.strip())
+        return safe
+
+    @staticmethod
+    def _prune(ports_dq, times_dq, src, now, window):
+        while ports_dq[src] and (now - ports_dq[src][0][0]) > window:
+            ports_dq[src].popleft()
+        while times_dq[src] and (now - times_dq[src][0]) > window:
+            times_dq[src].popleft()
+
+    # -- feature extraction ------------------------------------------------
+
+    def _features(self, src, ports_dq, times_dq, window, scan_type):
+        port_counter = Counter(p for _, p in ports_dq[src])
+        unique = set(port_counter.keys())
+        n_unique = len(unique)
+        n_probes = len(times_dq[src])
+
+        entropy = shannon_entropy(port_counter) if n_unique > 1 else 0.0
+        max_ent = math.log2(n_unique) if n_unique > 1 else 0.0
+        ent_ratio = entropy / max_ent if max_ent > 0 else 0.0
+        probe_rate = n_probes / window if window > 0 else 0.0
+        port_range = (max(unique) - min(unique)) if n_unique > 0 else 0
+
+        return {
+            'unique_ports': n_unique,
+            'probe_count': n_probes,
+            'window_sec': window,
+            'port_entropy': round(entropy, 4),
+            'max_entropy': round(max_ent, 4),
+            'entropy_ratio': round(ent_ratio, 4),
+            'probe_rate': round(probe_rate, 2),
+            'port_range': port_range,
+            'scan_type': scan_type,
+        }
+
+    def _confidence(self, feat, port_thr, probe_thr):
+        c_ports = min(1.0, feat['unique_ports'] / max(port_thr, 1))
+        c_probes = min(1.0, feat['probe_count'] / max(probe_thr, 1))
+
+        if self.method == 'improved' and feat['unique_ports'] > 2:
+            c_ent = min(1.0, feat['port_entropy'] / max(1.5, 0.01))
+            conf = 0.35 * c_ports + 0.35 * c_probes + 0.30 * c_ent
+        else:
+            conf = 0.5 * c_ports + 0.5 * c_probes
+        return round(min(1.0, conf), 4)
+
+    # -- scan evaluation ---------------------------------------------------
+
+    def _check_scan(self, src, pkt, ports_dq, times_dq,
+                    window, port_thr, probe_thr, label):
+        feat = self._features(src, ports_dq, times_dq, window, label)
+        conf = self._confidence(feat, port_thr, probe_thr)
+        feat['confidence'] = conf
+
+        if self.method == 'baseline':
+            triggered = (feat['unique_ports'] >= port_thr
+                         and feat['probe_count'] >= probe_thr)
+        else:
+            triggered = (feat['unique_ports'] >= port_thr
+                         and feat['probe_count'] >= probe_thr)
+            if not triggered:
+                triggered = (conf >= 0.70
+                             and feat['port_entropy'] > 1.0
+                             and feat['unique_ports'] >= max(port_thr // 2, 3))
+
+        if triggered:
+            self._do_alert_block(src, pkt, feat, conf, window, label)
+            return True
+        return False
+
+    def _do_alert_block(self, src, pkt, feat, conf, window, label):
+        src_mac = pkt[Ether].src.upper() if pkt.haslayer(Ether) else 'unknown'
+        msg = (f"{label} scan from {src} / {src_mac} "
+               f"({feat['unique_ports']} ports / {feat['probe_count']} probes "
+               f"in {window}s, entropy={feat['port_entropy']:.2f})")
+
+        self.alert(message=msg, source_ip=src, source_mac=src_mac,
+                   confidence=conf, features=feat)
+
+        if src_mac != 'unknown':
+            persist_detected_mac(src_mac, src, lambda m: self._emit(m))
+
+        if src in self._safe_ips:
+            self.warn(f"{src} is gateway/whitelisted — alert only")
+        else:
+            blocked = self.block(
+                target=src, reason=f"{label} scan",
+                source_ip=src, source_mac=src_mac,
+                confidence=conf, features=feat,
+                do_block_fn=lambda: block_ip(self.CHAIN, src),
+            )
+            if blocked:
+                self.blocked_ips.add(src)
+                self.stats['blocks'] += 1
+
+        self._clear_tracking(src)
+
+    def _clear_tracking(self, src):
+        for dq in (self.syn_ports, self.syn_times,
+                   self.slow_syn_ports, self.slow_syn_times,
+                   self.stealth_ports, self.stealth_times,
+                   self.slow_stealth_ports, self.slow_stealth_times,
+                   self.udp_ports, self.udp_times):
+            dq[src].clear()
+
+    # -- packet handlers ---------------------------------------------------
+
+    def _on_packet(self, pkt):
+        now = time.time()
+        if now - self._start_time < 1:
+            return
+        if IP not in pkt:
+            return
+        src, dst = pkt[IP].src, pkt[IP].dst
+        if src in self.blocked_ips:
+            return
+
+        if TCP in pkt:
+            self._handle_tcp(pkt, src, dst, now)
+        elif UDP in pkt:
+            self._handle_udp(pkt, src, dst, now)
+
+    def _handle_tcp(self, pkt, src, dst, now):
+        if dst != self._defense_ip or src == self._defense_ip:
+            return
+        flags = str(pkt[TCP].flags)
+        dport = int(pkt[TCP].dport)
+
+        if flags == 'S':
+            self._handle_syn(pkt, src, dport, now)
+        elif flags in self._STEALTH_FLAGS:
+            self._handle_stealth(pkt, src, dport, now, flags)
+
+    def _handle_syn(self, pkt, src, dport, now):
+        ps = self.cfg['portscan']
+        self.stats['syn_packets'] += 1
+
+        # fast window
+        self.syn_ports[src].append((now, dport))
+        self.syn_times[src].append(now)
+        self._prune(self.syn_ports, self.syn_times, src, now, ps['window_sec'])
+
+        if self._check_scan(src, pkt, self.syn_ports, self.syn_times,
+                            ps['window_sec'], ps['port_threshold'],
+                            ps['syn_threshold'], 'TCP SYN'):
+            return
+
+        # slow window
+        self.slow_syn_ports[src].append((now, dport))
+        self.slow_syn_times[src].append(now)
+        slow_w = ps.get('slow_window_sec', 120)
+        self._prune(self.slow_syn_ports, self.slow_syn_times, src, now, slow_w)
+
+        self._check_scan(src, pkt, self.slow_syn_ports, self.slow_syn_times,
+                         slow_w, ps.get('slow_port_threshold', ps['port_threshold']),
+                         ps.get('slow_syn_threshold', ps['syn_threshold']),
+                         'Slow TCP SYN')
+
+    def _handle_stealth(self, pkt, src, dport, now, flags):
+        ps = self.cfg['portscan']
+        scan_name = self._STEALTH_LABEL.get(flags, 'Stealth')
+        self.stats['stealth_packets'] += 1
+
+        self.stealth_ports[src].append((now, dport))
+        self.stealth_times[src].append(now)
+        self._prune(self.stealth_ports, self.stealth_times,
+                    src, now, ps['window_sec'])
+
+        if self._check_scan(src, pkt, self.stealth_ports, self.stealth_times,
+                            ps['window_sec'], ps['port_threshold'],
+                            ps['syn_threshold'], f'Stealth/{scan_name}'):
+            return
+
+        self.slow_stealth_ports[src].append((now, dport))
+        self.slow_stealth_times[src].append(now)
+        slow_w = ps.get('slow_window_sec', 120)
+        self._prune(self.slow_stealth_ports, self.slow_stealth_times,
+                    src, now, slow_w)
+
+        self._check_scan(src, pkt, self.slow_stealth_ports,
+                         self.slow_stealth_times, slow_w,
+                         ps.get('slow_port_threshold', ps['port_threshold']),
+                         ps.get('slow_syn_threshold', ps['syn_threshold']),
+                         f'Slow Stealth/{scan_name}')
+
+    def _handle_udp(self, pkt, src, dst, now):
+        if dst != self._defense_ip or src == self._defense_ip:
+            return
+        ps = self.cfg['portscan']
+        dport = int(pkt[UDP].dport)
+        self.stats['udp_packets'] += 1
+
+        self.udp_ports[src].append((now, dport))
+        self.udp_times[src].append(now)
+        udp_w = ps.get('udp_window_sec', 10)
+        self._prune(self.udp_ports, self.udp_times, src, now, udp_w)
+
+        self._check_scan(src, pkt, self.udp_ports, self.udp_times,
+                         udp_w, ps.get('udp_port_threshold', 8),
+                         ps.get('udp_probe_threshold', 12), 'UDP')
+
+    # -- lifecycle ---------------------------------------------------------
+
+    def reset_state(self):
+        for dq in (self.syn_ports, self.syn_times,
+                   self.slow_syn_ports, self.slow_syn_times,
+                   self.stealth_ports, self.stealth_times,
+                   self.slow_stealth_ports, self.slow_stealth_times,
+                   self.udp_ports, self.udp_times):
+            dq.clear()
+        self.blocked_ips.clear()
+        for k in self.stats:
+            self.stats[k] = 0
+
+    def run(self):
+        iface = self.cfg['interface']
+        self._defense_ip = get_interface_ip(iface)
+        self._safe_ips = self._build_safe_ips()
+        self._start_time = time.time()
+
+        self.reset_state()
+        ensure_chain(self.CHAIN)
+        flush_chain(self.CHAIN)
+
+        ps = self.cfg['portscan']
+        from modules.firewall import run as fw_run
+        fw_run(["sudo", "iptables", "-A", self.CHAIN, "-p", "tcp", "--syn",
+                "-m", "recent", "--name", "nids_ps", "--set"])
+        fw_run(["sudo", "iptables", "-A", self.CHAIN, "-p", "tcp", "--syn",
+                "-m", "recent", "--name", "nids_ps", "--rcheck",
+                "--seconds", str(ps['window_sec']),
+                "--hitcount", str(ps['syn_threshold']), "-j", "DROP"])
+
+        self._emit(f"[START] Port-scan detector v{self.VERSION} on {iface} "
+                   f"(IP: {self._defense_ip})")
+
+        try:
+            while not self.stop_event.is_set():
+                sniff(
+                    iface=iface,
+                    prn=self._on_packet,
+                    store=False,
+                    filter="tcp or udp",
+                    timeout=2,
+                    stop_filter=lambda _: self.stop_event.is_set(),
+                )
+        finally:
+            flush_chain(self.CHAIN)
+            self._emit("[STOP] Port-scan detector stopped")
+
+
+# ---------------------------------------------------------------------------
+# Module-level compatibility (standalone use + legacy engine fallback)
+# ---------------------------------------------------------------------------
 _callback = None
-_defense_ip = None
-_safe_ips = set()
-_cfg = None
-_start_time = None
 stats = {"syn_packets": 0, "stealth_packets": 0, "udp_packets": 0, "blocks": 0}
-
-_STEALTH_FLAGS = frozenset({
-    "",      # Null scan — no flags
-    "F",     # FIN scan
-    "FPU",   # Xmas scan — FIN+PSH+URG
-    "A",     # ACK scan — mapping filtered vs unfiltered
-})
-
-_STEALTH_LABEL = {
-    "": "Null", "F": "FIN", "FPU": "Xmas", "A": "ACK",
-}
-
 
 def set_callback(fn):
     global _callback
     _callback = fn
 
-
-def _emit(msg):
-    line = f"{ts()} {msg}"
-    if _callback:
-        _callback(line)
-    else:
-        print(line, flush=True)
-
-
-def _cleanup_old(src, now, window):
-    while seen_ports[src] and (now - seen_ports[src][0][0]) > window:
-        seen_ports[src].popleft()
-    while seen_syns[src] and (now - seen_syns[src][0]) > window:
-        seen_syns[src].popleft()
-
-
-def _cleanup_slow(src, now, window):
-    while slow_seen_ports[src] and (now - slow_seen_ports[src][0][0]) > window:
-        slow_seen_ports[src].popleft()
-    while slow_seen_syns[src] and (now - slow_seen_syns[src][0]) > window:
-        slow_seen_syns[src].popleft()
-
-
-def _cleanup_stealth(src, now, window):
-    while stealth_seen_ports[src] and (now - stealth_seen_ports[src][0][0]) > window:
-        stealth_seen_ports[src].popleft()
-    while stealth_seen_probes[src] and (now - stealth_seen_probes[src][0]) > window:
-        stealth_seen_probes[src].popleft()
-
-
-def _cleanup_slow_stealth(src, now, window):
-    while slow_stealth_seen_ports[src] and (now - slow_stealth_seen_ports[src][0][0]) > window:
-        slow_stealth_seen_ports[src].popleft()
-    while slow_stealth_seen_probes[src] and (now - slow_stealth_seen_probes[src][0]) > window:
-        slow_stealth_seen_probes[src].popleft()
-
-
-def _cleanup_udp(src, now, window):
-    while udp_seen_ports[src] and (now - udp_seen_ports[src][0][0]) > window:
-        udp_seen_ports[src].popleft()
-    while udp_seen_probes[src] and (now - udp_seen_probes[src][0]) > window:
-        udp_seen_probes[src].popleft()
-
-
-def _block_scan(src, pkt, unique_ports, count, window, label):
-    src_mac = pkt[Ether].src.upper() if pkt.haslayer(Ether) else "unknown"
-    if "UDP" in label:
-        proto = "UDP probes"
-    elif "Stealth" in label or any(k in label for k in ("Xmas", "Null", "FIN", "ACK")):
-        proto = "packets"
-    else:
-        proto = "SYNs"
-    _emit(
-        f"[ALERT] {label} scan from {src} / {src_mac} "
-        f"({len(unique_ports)} ports / {count} {proto} in {window}s)"
-    )
-    if src_mac != "unknown":
-        persist_detected_mac(src_mac, src, _emit)
-    if src in _safe_ips:
-        _emit(f"[WARN] {src} is the gateway/whitelisted — alerting only (blocking would break connectivity)")
-    else:
-        block_ip(CHAIN, src)
-        blocked_ips.add(src)
-        stats["blocks"] += 1
-        _emit(f"[BLOCK] Blocked {src}")
-    seen_ports[src].clear()
-    seen_syns[src].clear()
-    slow_seen_ports[src].clear()
-    slow_seen_syns[src].clear()
-    stealth_seen_ports[src].clear()
-    stealth_seen_probes[src].clear()
-    slow_stealth_seen_ports[src].clear()
-    slow_stealth_seen_probes[src].clear()
-    udp_seen_ports[src].clear()
-    udp_seen_probes[src].clear()
-
-
-def _handle_tcp(pkt, src, dst, now):
-    flags = str(pkt[TCP].flags)
-    dport = int(pkt[TCP].dport)
-
-    if dst != _defense_ip or src == _defense_ip:
-        return
-
-    if flags == "S":
-        _handle_syn(pkt, src, dport, now)
-    elif flags in _STEALTH_FLAGS:
-        _handle_stealth(pkt, src, dport, now, flags)
-
-
-def _handle_syn(pkt, src, dport, now):
-    window = _cfg["portscan"]["window_sec"]
-    port_thr = _cfg["portscan"]["port_threshold"]
-    syn_thr = _cfg["portscan"]["syn_threshold"]
-    slow_window = _cfg["portscan"].get("slow_window_sec", 120)
-    slow_port_thr = _cfg["portscan"].get("slow_port_threshold", port_thr)
-    slow_syn_thr = _cfg["portscan"].get("slow_syn_threshold", syn_thr)
-
-    stats["syn_packets"] += 1
-    seen_ports[src].append((now, dport))
-    seen_syns[src].append(now)
-    slow_seen_ports[src].append((now, dport))
-    slow_seen_syns[src].append(now)
-    _cleanup_old(src, now, window)
-    _cleanup_slow(src, now, slow_window)
-
-    unique_ports = {p for _, p in seen_ports[src]}
-    syn_count = len(seen_syns[src])
-    slow_unique = {p for _, p in slow_seen_ports[src]}
-    slow_count = len(slow_seen_syns[src])
-
-    if len(unique_ports) >= port_thr and syn_count >= syn_thr:
-        _block_scan(src, pkt, unique_ports, syn_count, window, "TCP port")
-        return
-
-    if len(slow_unique) >= slow_port_thr and slow_count >= slow_syn_thr:
-        _block_scan(src, pkt, slow_unique, slow_count, slow_window, "Slow TCP")
-
-
-def _handle_stealth(pkt, src, dport, now, flags):
-    """Detect Xmas / Null / FIN / ACK scans using the same threshold logic."""
-    window = _cfg["portscan"]["window_sec"]
-    port_thr = _cfg["portscan"]["port_threshold"]
-    probe_thr = _cfg["portscan"]["syn_threshold"]
-    slow_window = _cfg["portscan"].get("slow_window_sec", 120)
-    slow_port_thr = _cfg["portscan"].get("slow_port_threshold", port_thr)
-    slow_probe_thr = _cfg["portscan"].get("slow_syn_threshold", probe_thr)
-
-    stats["stealth_packets"] += 1
-    stealth_seen_ports[src].append((now, dport))
-    stealth_seen_probes[src].append(now)
-    slow_stealth_seen_ports[src].append((now, dport))
-    slow_stealth_seen_probes[src].append(now)
-    _cleanup_stealth(src, now, window)
-    _cleanup_slow_stealth(src, now, slow_window)
-
-    scan_name = _STEALTH_LABEL.get(flags, "Stealth")
-    unique_ports = {p for _, p in stealth_seen_ports[src]}
-    probe_count = len(stealth_seen_probes[src])
-    slow_unique = {p for _, p in slow_stealth_seen_ports[src]}
-    slow_count = len(slow_stealth_seen_probes[src])
-
-    if len(unique_ports) >= port_thr and probe_count >= probe_thr:
-        _block_scan(src, pkt, unique_ports, probe_count, window,
-                    f"Stealth/{scan_name}")
-        return
-
-    if len(slow_unique) >= slow_port_thr and slow_count >= slow_probe_thr:
-        _block_scan(src, pkt, slow_unique, slow_count, slow_window,
-                    f"Slow Stealth/{scan_name}")
-
-
-def _handle_udp(pkt, src, dst, now):
-    dport = int(pkt[UDP].dport)
-    if dst != _defense_ip or src == _defense_ip:
-        return
-
-    udp_window = _cfg["portscan"].get("udp_window_sec", 10)
-    udp_port_thr = _cfg["portscan"].get("udp_port_threshold", 8)
-    udp_probe_thr = _cfg["portscan"].get("udp_probe_threshold", 12)
-
-    stats["udp_packets"] += 1
-    udp_seen_ports[src].append((now, dport))
-    udp_seen_probes[src].append(now)
-    _cleanup_udp(src, now, udp_window)
-
-    unique_ports = {p for _, p in udp_seen_ports[src]}
-    probe_count = len(udp_seen_probes[src])
-
-    if len(unique_ports) >= udp_port_thr and probe_count >= udp_probe_thr:
-        _block_scan(src, pkt, unique_ports, probe_count, udp_window, "UDP port")
-
-
-def _on_packet(pkt):
-    now = time.time()
-    if now - _start_time < 1:
-        return
-    if IP not in pkt:
-        return
-
-    src = pkt[IP].src
-    dst = pkt[IP].dst
-
-    if src in blocked_ips:
-        return
-
-    if TCP in pkt:
-        _handle_tcp(pkt, src, dst, now)
-    elif UDP in pkt:
-        _handle_udp(pkt, src, dst, now)
-
-
-def _build_safe_ips(cfg, iface):
-    safe = {"0.0.0.0", "255.255.255.255"}
-    if cfg.get("network_mode", "nat") == "bridged":
-        gw = get_default_gateway(iface)
-        if gw and cfg.get("spoof", {}).get("gateway_auto_whitelist", True):
-            safe.add(gw)
-        if cfg.get("spoof", {}).get("whitelist_host") and cfg.get("spoof", {}).get("host_ip", "").strip():
-            safe.add(cfg["spoof"]["host_ip"].strip())
-    for ip_str in cfg.get("spoof", {}).get("whitelist_ips", []):
-        safe.add(ip_str.strip())
-    return safe
-
-
 def run_detector(cfg, stop_event=None):
-    """Main loop -- runs until stop_event is set."""
-    global _cfg, _defense_ip, _safe_ips, _start_time
-
-    _cfg = cfg
-    iface = cfg["interface"]
-    _defense_ip = get_interface_ip(iface)
-    _safe_ips = _build_safe_ips(cfg, iface)
-    _start_time = time.time()
-
-    seen_ports.clear()
-    seen_syns.clear()
-    slow_seen_ports.clear()
-    slow_seen_syns.clear()
-    stealth_seen_ports.clear()
-    stealth_seen_probes.clear()
-    slow_stealth_seen_ports.clear()
-    slow_stealth_seen_probes.clear()
-    udp_seen_ports.clear()
-    udp_seen_probes.clear()
-    blocked_ips.clear()
-    stats["syn_packets"] = 0
-    stats["stealth_packets"] = 0
-    stats["udp_packets"] = 0
-    stats["blocks"] = 0
-
-    ensure_chain(CHAIN)
-    flush_chain(CHAIN)
-
-    syn_thr = cfg["portscan"]["syn_threshold"]
-    window = cfg["portscan"]["window_sec"]
-    run(["sudo", "iptables", "-A", CHAIN, "-p", "tcp", "--syn", "-m", "recent",
-         "--name", "nids_ps", "--set"])
-    run(["sudo", "iptables", "-A", CHAIN, "-p", "tcp", "--syn", "-m", "recent",
-         "--name", "nids_ps", "--rcheck", "--seconds", str(window),
-         "--hitcount", str(syn_thr), "-j", "DROP"])
-
-    _emit(f"[START] Port-scan detector on {iface} (IP: {_defense_ip})")
-
-    try:
-        while stop_event is None or not stop_event.is_set():
-            sniff(
-                iface=iface,
-                prn=_on_packet,
-                store=False,
-                filter="tcp or udp",
-                timeout=2,
-                stop_filter=lambda _: stop_event is not None and stop_event.is_set(),
-            )
-    finally:
-        flush_chain(CHAIN)
-        _emit("[STOP] Port-scan detector stopped")
-
+    import threading
+    det = PortScanDetector(cfg, stop_event or threading.Event(), _callback)
+    det.run()
+    stats.update(det.stats)
 
 if __name__ == "__main__":
-    import sys, os
+    import sys, os, threading
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from config import load_config
     run_detector(load_config())

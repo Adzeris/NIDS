@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Unified configuration for the NIDS system.
-All thresholds, interface settings, and module toggles live here.
+Unified configuration for the NIDS research platform (v4.0).
+All thresholds, interface settings, module toggles, and research
+parameters live here.
+
+Schema version is tracked for reproducibility — if the config layout
+changes between versions, older snapshots can be identified.
 """
 
 import json
@@ -9,8 +13,11 @@ import os
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nids_config.json")
 
+CONFIG_SCHEMA_VERSION = "4.0"
+
 DEFAULTS = {
-    "interface": "eth0",
+    "schema_version": CONFIG_SCHEMA_VERSION,
+    "interface": "auto",
     "network_mode": "nat",
 
     "modules": {
@@ -18,7 +25,12 @@ DEFAULTS = {
         "bruteforce": True,
         "dos": True,
         "spoof": True,
-        "macfilter": True,
+        "macfilter": False,
+    },
+
+    "research": {
+        "detect_only": False,
+        "method": "improved",
     },
 
     "portscan": {
@@ -54,6 +66,7 @@ DEFAULTS = {
         "host_ip": "",
         "arp_alert_cooldown": 60,
         "ttl_deviation": 20,
+        "ttl_z_threshold": 2.5,
         "ttl_min_samples": 20,
         "ttl_alert_cooldown": 120,
         "ttl_max_alerts_per_source": 3,
@@ -88,6 +101,7 @@ def load_config():
 
 def save_config(cfg):
     """Persist current config to JSON."""
+    cfg["schema_version"] = CONFIG_SCHEMA_VERSION
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
 
