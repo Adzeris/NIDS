@@ -26,9 +26,6 @@ from modules.netutil import list_interfaces
 
 APP_VERSION = "4.0"
 
-_MAC_MODE_UI_TO_CFG = {"Allow Only": "whitelist", "Block Only": "blacklist"}
-_MAC_MODE_CFG_TO_UI = {v: k for k, v in _MAC_MODE_UI_TO_CFG.items()}
-
 
 # ---------------------------------------------------------------------------
 # Worker thread that bridges the engine to the Qt event loop
@@ -500,6 +497,15 @@ class MainWindow(QMainWindow):
         self.netmode_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
         netmode_lay.addWidget(self.netmode_hint)
 
+        self.chk_whitelist_gateway = QCheckBox(
+            "Whitelist default gateway (alerts, but do not block your router / NAT path)"
+        )
+        self.chk_whitelist_gateway.setToolTip(
+            "Prevents blocking the IP of your default route. Needed for normal DNS/DHCP "
+            "in VMware/VirtualBox NAT. Add extra IPs (e.g. .254 DHCP) in Advanced if needed."
+        )
+        netmode_lay.addWidget(self.chk_whitelist_gateway)
+
         self.bridged_opts = QWidget()
         bridged_lay = QFormLayout(self.bridged_opts)
         bridged_lay.setVerticalSpacing(10)
@@ -520,14 +526,14 @@ class MainWindow(QMainWindow):
             self.bridged_opts.setVisible(is_bridged)
             if is_bridged:
                 self.netmode_hint.setText(
-                    "Bridged mode: your VM shares the Home network. The gateway (router) "
-                    "will be whitelisted to avoid breaking internet. Optionally whitelist "
-                    "your host PC above."
+                    "Bridged: VM is on the LAN. Use the gateway checkbox so your router is "
+                    "not dropped; add the host IP above if you also want the host PC never blocked."
                 )
             else:
                 self.netmode_hint.setText(
-                    "NAT mode: attacker traffic arrives as the gateway IP. "
-                    "No IPs are auto-whitelisted so all attacks are detected."
+                    "NAT: normal traffic may look like the virtual router. Keep "
+                    "'Whitelist default gateway' enabled so the router/forwarder is not "
+                    "blocked. For VMware DHCP, also add 192.168.x.254 in Advanced whitelists if needed."
                 )
         self.netmode_combo.currentIndexChanged.connect(_on_netmode_changed)
         _on_netmode_changed(0)
@@ -601,6 +607,13 @@ class MainWindow(QMainWindow):
         ps_lay.addRow("UDP probe count:", self.spin_ps_udp_probes)
         ps_lay.addRow("UDP window (sec):", self.spin_ps_udp_window)
 
+        self.chk_ps_local_only = QCheckBox("Port Scan: local/private sources only (ignore public internet IPs)")
+        self.chk_ps_local_only.setToolTip(
+            "Recommended for NAT/home-lab demos. Public cloud/CDN return traffic is ignored, "
+            "so alerts focus on LAN attackers."
+        )
+        ps_lay.addRow(self.chk_ps_local_only)
+
         ps_lay.addRow("Block duration (sec):", self.spin_ps_block)
         advanced_content_lay.addWidget(ps_grp)
 
@@ -659,24 +672,98 @@ class MainWindow(QMainWindow):
         sp_lay.setContentsMargins(14, 20, 14, 14)
 
         self.chk_arp_watch = QCheckBox("Enable ARP poisoning detection")
+        self.chk_sp_arp_burst_watch = QCheckBox("Enable ARP burst detection")
+        self.chk_sp_name_watch = QCheckBox("Enable LLMNR/mDNS/NBNS spoof detection")
+        self.chk_sp_dhcp_watch = QCheckBox("Enable rogue DHCP detection")
+        self.chk_sp_dns_watch = QCheckBox("Enable DNS spoof detection")
         sp_lay.addRow(self.chk_arp_watch)
+        sp_lay.addRow(self.chk_sp_arp_burst_watch)
+        sp_lay.addRow(self.chk_sp_name_watch)
+        sp_lay.addRow(self.chk_sp_dhcp_watch)
+        dhcp_note = QLabel("If disabled, DHCP OFFER/ACK rogue-server alerts are skipped.")
+        dhcp_note.setWordWrap(True)
+        dhcp_note.setStyleSheet("color: #8b949e; font-size: 11px; margin-top: -4px;")
+        sp_lay.addRow(dhcp_note)
+        sp_lay.addRow(self.chk_sp_dns_watch)
 
         self.spin_sp_arp_cooldown = ClickFocusSpinBox(); self.spin_sp_arp_cooldown.setRange(1, 600)
+        self.spin_sp_arp_burst_threshold = ClickFocusSpinBox(); self.spin_sp_arp_burst_threshold.setRange(1, 500)
+        self.spin_sp_arp_burst_window = ClickFocusSpinBox(); self.spin_sp_arp_burst_window.setRange(1, 300)
+        self.spin_sp_arp_burst_cooldown = ClickFocusSpinBox(); self.spin_sp_arp_burst_cooldown.setRange(1, 600)
         self.spin_sp_ttl_dev = ClickFocusSpinBox(); self.spin_sp_ttl_dev.setRange(1, 128)
         self.spin_sp_ttl_samples = ClickFocusSpinBox(); self.spin_sp_ttl_samples.setRange(2, 200)
         self.spin_sp_ttl_cooldown = ClickFocusSpinBox(); self.spin_sp_ttl_cooldown.setRange(1, 3600)
         self.spin_sp_ttl_max_alerts = ClickFocusSpinBox(); self.spin_sp_ttl_max_alerts.setRange(1, 100)
+        self.spin_sp_name_threshold = ClickFocusSpinBox(); self.spin_sp_name_threshold.setRange(1, 500)
+        self.spin_sp_name_window = ClickFocusSpinBox(); self.spin_sp_name_window.setRange(1, 120)
+        self.spin_sp_name_query_grace = ClickFocusSpinBox(); self.spin_sp_name_query_grace.setRange(1, 30)
+        self.spin_sp_name_conflict_window = ClickFocusSpinBox(); self.spin_sp_name_conflict_window.setRange(1, 300)
+        self.spin_sp_name_cooldown = ClickFocusSpinBox(); self.spin_sp_name_cooldown.setRange(1, 600)
+        self.spin_sp_dhcp_threshold = ClickFocusSpinBox(); self.spin_sp_dhcp_threshold.setRange(1, 100)
+        self.spin_sp_dhcp_window = ClickFocusSpinBox(); self.spin_sp_dhcp_window.setRange(1, 300)
+        self.spin_sp_dhcp_cooldown = ClickFocusSpinBox(); self.spin_sp_dhcp_cooldown.setRange(1, 600)
+        self.spin_sp_dns_threshold = ClickFocusSpinBox(); self.spin_sp_dns_threshold.setRange(1, 200)
+        self.spin_sp_dns_window = ClickFocusSpinBox(); self.spin_sp_dns_window.setRange(1, 300)
+        self.spin_sp_dns_query_grace = ClickFocusSpinBox(); self.spin_sp_dns_query_grace.setRange(1, 30)
+        self.spin_sp_dns_conflict_window = ClickFocusSpinBox(); self.spin_sp_dns_conflict_window.setRange(1, 120)
+        self.spin_sp_dns_cooldown = ClickFocusSpinBox(); self.spin_sp_dns_cooldown.setRange(1, 600)
         self.chk_ttl_local_only = QCheckBox("TTL checks local subnet only (recommended)")
         self.spin_sp_block = ClickFocusSpinBox(); self.spin_sp_block.setRange(1, 9999)
-        for sp in [self.spin_sp_arp_cooldown, self.spin_sp_ttl_dev,
-                   self.spin_sp_ttl_samples, self.spin_sp_ttl_cooldown,
-                   self.spin_sp_ttl_max_alerts, self.spin_sp_block]:
+        for sp in [
+            self.spin_sp_arp_cooldown,
+            self.spin_sp_arp_burst_threshold,
+            self.spin_sp_arp_burst_window,
+            self.spin_sp_arp_burst_cooldown,
+            self.spin_sp_ttl_dev,
+            self.spin_sp_ttl_samples,
+            self.spin_sp_ttl_cooldown,
+            self.spin_sp_ttl_max_alerts,
+            self.spin_sp_name_threshold,
+            self.spin_sp_name_window,
+            self.spin_sp_name_query_grace,
+            self.spin_sp_name_conflict_window,
+            self.spin_sp_name_cooldown,
+            self.spin_sp_dhcp_threshold,
+            self.spin_sp_dhcp_window,
+            self.spin_sp_dhcp_cooldown,
+            self.spin_sp_dns_threshold,
+            self.spin_sp_dns_window,
+            self.spin_sp_dns_query_grace,
+            self.spin_sp_dns_conflict_window,
+            self.spin_sp_dns_cooldown,
+            self.spin_sp_block,
+        ]:
             sp.setMinimumHeight(30)
         sp_lay.addRow("ARP alert cooldown (sec):", self.spin_sp_arp_cooldown)
+        sp_lay.addRow("ARP burst threshold (replies):", self.spin_sp_arp_burst_threshold)
+        sp_lay.addRow("ARP burst window (sec):", self.spin_sp_arp_burst_window)
+        sp_lay.addRow("ARP burst cooldown (sec):", self.spin_sp_arp_burst_cooldown)
         sp_lay.addRow("TTL deviation threshold:", self.spin_sp_ttl_dev)
         sp_lay.addRow("TTL min samples:", self.spin_sp_ttl_samples)
         sp_lay.addRow("TTL alert cooldown (sec):", self.spin_sp_ttl_cooldown)
         sp_lay.addRow("TTL max alerts per source:", self.spin_sp_ttl_max_alerts)
+        name_lbl = QLabel("Name service spoof thresholds")
+        name_lbl.setStyleSheet("color: #58a6ff; font-weight: bold; margin-top: 8px;")
+        sp_lay.addRow(name_lbl)
+        sp_lay.addRow("Name response threshold:", self.spin_sp_name_threshold)
+        sp_lay.addRow("Name response window (sec):", self.spin_sp_name_window)
+        sp_lay.addRow("Name query grace (sec):", self.spin_sp_name_query_grace)
+        sp_lay.addRow("Name conflict window (sec):", self.spin_sp_name_conflict_window)
+        sp_lay.addRow("Name alert cooldown (sec):", self.spin_sp_name_cooldown)
+        dhcp_lbl = QLabel("Rogue DHCP thresholds")
+        dhcp_lbl.setStyleSheet("color: #58a6ff; font-weight: bold; margin-top: 8px;")
+        sp_lay.addRow(dhcp_lbl)
+        sp_lay.addRow("DHCP offer threshold:", self.spin_sp_dhcp_threshold)
+        sp_lay.addRow("DHCP window (sec):", self.spin_sp_dhcp_window)
+        sp_lay.addRow("DHCP alert cooldown (sec):", self.spin_sp_dhcp_cooldown)
+        dns_lbl = QLabel("DNS spoof thresholds")
+        dns_lbl.setStyleSheet("color: #58a6ff; font-weight: bold; margin-top: 8px;")
+        sp_lay.addRow(dns_lbl)
+        sp_lay.addRow("DNS unsolicited threshold:", self.spin_sp_dns_threshold)
+        sp_lay.addRow("DNS response window (sec):", self.spin_sp_dns_window)
+        sp_lay.addRow("DNS query grace (sec):", self.spin_sp_dns_query_grace)
+        sp_lay.addRow("DNS conflict window (sec):", self.spin_sp_dns_conflict_window)
+        sp_lay.addRow("DNS alert cooldown (sec):", self.spin_sp_dns_cooldown)
         sp_lay.addRow(self.chk_ttl_local_only)
         sp_lay.addRow("Block duration (sec):", self.spin_sp_block)
 
@@ -724,41 +811,8 @@ class MainWindow(QMainWindow):
         lay.setSpacing(12)
         lay.setContentsMargins(10, 10, 10, 10)
 
-        mode_grp = QGroupBox("Filter Mode")
-        mode_grp_lay = QVBoxLayout(mode_grp)
-        mode_row = QHBoxLayout()
-        self.mac_mode_combo = ClickFocusComboBox()
-        self.mac_mode_combo.addItems(["Allow Only", "Block Only"])
-        mode_row.addWidget(QLabel("Mode:"))
-        mode_row.addWidget(self.mac_mode_combo)
-        mode_row.addStretch()
-        mode_grp_lay.addLayout(mode_row)
-
-        self.mac_mode_hint = QLabel()
-        self.mac_mode_hint.setWordWrap(True)
-        self.mac_mode_hint.setStyleSheet("color: #8b949e; font-size: 11px; margin-top: 4px;")
-        mode_grp_lay.addWidget(self.mac_mode_hint)
-
-        def _on_mac_mode_changed(_idx=None):
-            if self.mac_mode_combo.currentText() == "Allow Only":
-                self.mac_mode_hint.setText(
-                    "Allow Only (whitelist): Only devices in the Allowed MACs list can "
-                    "communicate. All other MAC addresses are automatically blocked."
-                )
-            else:
-                self.mac_mode_hint.setText(
-                    "Block Only (blacklist): All devices are allowed by default. "
-                    "Only MAC addresses in the Blocked MACs list are denied access."
-                )
-        self.mac_mode_combo.currentIndexChanged.connect(_on_mac_mode_changed)
-        _on_mac_mode_changed()
-
-        lay.addWidget(mode_grp)
-
         detect_note = QLabel(
             "Detected MACs are collected by active detectors (e.g. Port Scan / Spoof). "
-            "This list is always populated for review; this tab controls MAC policy "
-            "(allow/block), not whether MACs are observed."
         )
         detect_note.setWordWrap(True)
         detect_note.setStyleSheet("color: #8b949e; font-size: 11px;")
@@ -867,7 +921,7 @@ class MainWindow(QMainWindow):
             "Port Scan — Entropy-augmented multi-strategy (SYN, stealth, UDP)\n"
             "Brute-Force — IAT temporal-pattern analysis (SSH + FTP)\n"
             "DoS / Flood — CUSUM change-point detection (ICMP)\n"
-            "IP Spoof — Z-score TTL modeling + ARP + bogon (multi-signal)\n"
+            "IP Spoof — ARP/TTL + DNS/LLMNR/mDNS/NBNS + DHCP (multi-signal)\n"
             "MAC Filter — Policy enforcement with research instrumentation"
         )
         modules.setAlignment(Qt.AlignCenter)
@@ -1056,6 +1110,7 @@ class MainWindow(QMainWindow):
         self.bridged_opts.setVisible(mode == "bridged")
         self.chk_whitelist_host.setChecked(c["spoof"].get("whitelist_host", False))
         self.host_ip_edit.setText(c["spoof"].get("host_ip", ""))
+        self.chk_whitelist_gateway.setChecked(c["spoof"].get("whitelist_default_gateway", True))
 
         m = c["modules"]
         m.setdefault("macfilter", True)
@@ -1074,6 +1129,7 @@ class MainWindow(QMainWindow):
         self.spin_ps_udp_ports.setValue(ps.get("udp_port_threshold", 8))
         self.spin_ps_udp_probes.setValue(ps.get("udp_probe_threshold", 12))
         self.spin_ps_udp_window.setValue(ps.get("udp_window_sec", 10))
+        self.chk_ps_local_only.setChecked(ps.get("local_sources_only", True))
         self.spin_ps_block.setValue(ps["block_seconds"])
 
         bf = c["bruteforce"]
@@ -1089,11 +1145,31 @@ class MainWindow(QMainWindow):
 
         sp = c["spoof"]
         self.chk_arp_watch.setChecked(sp.get("arp_watch", True))
+        self.chk_sp_arp_burst_watch.setChecked(sp.get("arp_burst_watch", True))
+        self.chk_sp_name_watch.setChecked(sp.get("name_spoof_watch", True))
+        self.chk_sp_dhcp_watch.setChecked(sp.get("dhcp_watch", True))
+        self.chk_sp_dns_watch.setChecked(sp.get("dns_spoof_watch", True))
         self.spin_sp_arp_cooldown.setValue(sp.get("arp_alert_cooldown", 30))
+        self.spin_sp_arp_burst_threshold.setValue(sp.get("arp_burst_threshold", 12))
+        self.spin_sp_arp_burst_window.setValue(sp.get("arp_burst_window_sec", 10))
+        self.spin_sp_arp_burst_cooldown.setValue(sp.get("arp_burst_cooldown", 30))
         self.spin_sp_ttl_dev.setValue(sp.get("ttl_deviation", 15))
         self.spin_sp_ttl_samples.setValue(sp.get("ttl_min_samples", 10))
         self.spin_sp_ttl_cooldown.setValue(sp.get("ttl_alert_cooldown", 120))
         self.spin_sp_ttl_max_alerts.setValue(sp.get("ttl_max_alerts_per_source", 3))
+        self.spin_sp_name_threshold.setValue(sp.get("name_response_threshold", 8))
+        self.spin_sp_name_window.setValue(sp.get("name_window_sec", 12))
+        self.spin_sp_name_query_grace.setValue(sp.get("name_query_grace_sec", 3))
+        self.spin_sp_name_conflict_window.setValue(sp.get("name_conflict_window_sec", 20))
+        self.spin_sp_name_cooldown.setValue(sp.get("name_alert_cooldown", 60))
+        self.spin_sp_dhcp_threshold.setValue(sp.get("dhcp_offer_threshold", 2))
+        self.spin_sp_dhcp_window.setValue(sp.get("dhcp_window_sec", 20))
+        self.spin_sp_dhcp_cooldown.setValue(sp.get("dhcp_alert_cooldown", 60))
+        self.spin_sp_dns_threshold.setValue(sp.get("dns_unsolicited_threshold", 5))
+        self.spin_sp_dns_window.setValue(sp.get("dns_window_sec", 20))
+        self.spin_sp_dns_query_grace.setValue(sp.get("dns_query_grace_sec", 4))
+        self.spin_sp_dns_conflict_window.setValue(sp.get("dns_conflict_window_sec", 6))
+        self.spin_sp_dns_cooldown.setValue(sp.get("dns_alert_cooldown", 60))
         self.chk_ttl_local_only.setChecked(sp.get("ttl_local_only", True))
         self.spin_sp_block.setValue(sp.get("block_seconds", 120))
         self.spoof_wl_list.clear()
@@ -1101,10 +1177,6 @@ class MainWindow(QMainWindow):
             self.spoof_wl_list.addItem(ip)
 
         mc = c["macfilter"]
-        ui_mode = _MAC_MODE_CFG_TO_UI.get(mc.get("mode", "whitelist"), "Allow Only")
-        idx = self.mac_mode_combo.findText(ui_mode)
-        if idx >= 0:
-            self.mac_mode_combo.setCurrentIndex(idx)
         self.mac_wl_list.clear()
         for m in mc.get("allowed_macs", []):
             self.mac_wl_list.addItem(m)
@@ -1134,6 +1206,7 @@ class MainWindow(QMainWindow):
         is_bridged = self.netmode_combo.currentIndex() == 1
         c["network_mode"] = "bridged" if is_bridged else "nat"
         c["spoof"]["gateway_auto_whitelist"] = is_bridged
+        c["spoof"]["whitelist_default_gateway"] = self.chk_whitelist_gateway.isChecked()
         c["spoof"]["whitelist_host"] = self.chk_whitelist_host.isChecked() if is_bridged else False
         c["spoof"]["host_ip"] = self.host_ip_edit.text().strip() if is_bridged else ""
 
@@ -1141,7 +1214,7 @@ class MainWindow(QMainWindow):
         c["modules"]["bruteforce"] = self.chk_bruteforce.isChecked()
         c["modules"]["dos"] = self.chk_dos.isChecked()
         c["modules"]["spoof"] = self.chk_spoof.isChecked()
-        # MAC filter toggle was removed from UI; keep it enabled by default.
+        # MAC policy enforcement is always enabled by default.
         c["modules"]["macfilter"] = True
 
         c["portscan"]["port_threshold"] = self.spin_ps_ports.value()
@@ -1153,6 +1226,7 @@ class MainWindow(QMainWindow):
         c["portscan"]["udp_port_threshold"] = self.spin_ps_udp_ports.value()
         c["portscan"]["udp_probe_threshold"] = self.spin_ps_udp_probes.value()
         c["portscan"]["udp_window_sec"] = self.spin_ps_udp_window.value()
+        c["portscan"]["local_sources_only"] = self.chk_ps_local_only.isChecked()
         c["portscan"]["block_seconds"] = self.spin_ps_block.value()
 
         c["bruteforce"]["threshold"] = self.spin_bf_threshold.value()
@@ -1165,11 +1239,31 @@ class MainWindow(QMainWindow):
         c["dos"]["block_seconds"] = self.spin_dos_block.value()
 
         c["spoof"]["arp_watch"] = self.chk_arp_watch.isChecked()
+        c["spoof"]["arp_burst_watch"] = self.chk_sp_arp_burst_watch.isChecked()
+        c["spoof"]["name_spoof_watch"] = self.chk_sp_name_watch.isChecked()
+        c["spoof"]["dhcp_watch"] = self.chk_sp_dhcp_watch.isChecked()
+        c["spoof"]["dns_spoof_watch"] = self.chk_sp_dns_watch.isChecked()
         c["spoof"]["arp_alert_cooldown"] = self.spin_sp_arp_cooldown.value()
+        c["spoof"]["arp_burst_threshold"] = self.spin_sp_arp_burst_threshold.value()
+        c["spoof"]["arp_burst_window_sec"] = self.spin_sp_arp_burst_window.value()
+        c["spoof"]["arp_burst_cooldown"] = self.spin_sp_arp_burst_cooldown.value()
         c["spoof"]["ttl_deviation"] = self.spin_sp_ttl_dev.value()
         c["spoof"]["ttl_min_samples"] = self.spin_sp_ttl_samples.value()
         c["spoof"]["ttl_alert_cooldown"] = self.spin_sp_ttl_cooldown.value()
         c["spoof"]["ttl_max_alerts_per_source"] = self.spin_sp_ttl_max_alerts.value()
+        c["spoof"]["name_response_threshold"] = self.spin_sp_name_threshold.value()
+        c["spoof"]["name_window_sec"] = self.spin_sp_name_window.value()
+        c["spoof"]["name_query_grace_sec"] = self.spin_sp_name_query_grace.value()
+        c["spoof"]["name_conflict_window_sec"] = self.spin_sp_name_conflict_window.value()
+        c["spoof"]["name_alert_cooldown"] = self.spin_sp_name_cooldown.value()
+        c["spoof"]["dhcp_offer_threshold"] = self.spin_sp_dhcp_threshold.value()
+        c["spoof"]["dhcp_window_sec"] = self.spin_sp_dhcp_window.value()
+        c["spoof"]["dhcp_alert_cooldown"] = self.spin_sp_dhcp_cooldown.value()
+        c["spoof"]["dns_unsolicited_threshold"] = self.spin_sp_dns_threshold.value()
+        c["spoof"]["dns_window_sec"] = self.spin_sp_dns_window.value()
+        c["spoof"]["dns_query_grace_sec"] = self.spin_sp_dns_query_grace.value()
+        c["spoof"]["dns_conflict_window_sec"] = self.spin_sp_dns_conflict_window.value()
+        c["spoof"]["dns_alert_cooldown"] = self.spin_sp_dns_cooldown.value()
         c["spoof"]["ttl_local_only"] = self.chk_ttl_local_only.isChecked()
         c["spoof"]["block_seconds"] = self.spin_sp_block.value()
         c["spoof"]["whitelist_ips"] = [
@@ -1180,12 +1274,8 @@ class MainWindow(QMainWindow):
         # Research options are hidden in UI; keep sane defaults without hard-overriding.
         c.setdefault("research", {})
         c["research"].setdefault("detect_only", False)
-        if c["research"].get("method") not in {"baseline", "improved"}:
-            c["research"]["method"] = "improved"
+        c["research"]["method"] = "adaptive"
 
-        c["macfilter"]["mode"] = _MAC_MODE_UI_TO_CFG.get(
-            self.mac_mode_combo.currentText(), "whitelist"
-        )
         raw_allowed = [
             self.mac_wl_list.item(i).text().strip().upper()
             for i in range(self.mac_wl_list.count())
@@ -1360,18 +1450,23 @@ class MainWindow(QMainWindow):
     def _add_active_block(self, line, state="BLOCKED"):
         import re as _re
         ip_m = _re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-        mac_m = _re.search(r'(?:Blocked.*MAC|MAC)\s+([\dA-Fa-f:]{17})', line, _re.IGNORECASE)
+        mac_m = _re.search(r'([\dA-Fa-f]{2}(?::[\dA-Fa-f]{2}){5})', line, _re.IGNORECASE)
         ts_str = time.strftime("%H:%M:%S")
         chain = self._infer_chain(line)
 
-        if mac_m:
-            target = mac_m.group(1).upper()
-            label = f"MAC {target}  [{ts_str}]  {chain or ''}  {state}"
-            meta = {"type": "mac", "target": target, "chain": chain, "state": state}
-        elif ip_m:
-            target = ip_m.group(1)
-            label = f"IP  {target}  [{ts_str}]  {chain or ''}  {state}"
-            meta = {"type": "ip", "target": target, "chain": chain, "state": state}
+        if ip_m:
+            ip_addr = ip_m.group(1)
+            if mac_m:
+                mac_addr = mac_m.group(1).upper()
+                label = f"IP  {ip_addr}  /  {mac_addr}  [{ts_str}]  {chain or ''}  {state}"
+                meta = {"type": "ip", "target": ip_addr, "mac": mac_addr, "chain": chain, "state": state}
+            else:
+                label = f"IP  {ip_addr}  [{ts_str}]  {chain or ''}  {state}"
+                meta = {"type": "ip", "target": ip_addr, "chain": chain, "state": state}
+        elif mac_m:
+            mac_addr = mac_m.group(1).upper()
+            label = f"MAC {mac_addr}  [{ts_str}]  {chain or ''}  {state}"
+            meta = {"type": "mac", "target": mac_addr, "chain": chain, "state": state}
         else:
             return
 
@@ -1387,22 +1482,24 @@ class MainWindow(QMainWindow):
     def _remove_active_block(self, line):
         import re as _re
         ip_m = _re.search(r'(\d+\.\d+\.\d+\.\d+)', line)
-        mac_m = _re.search(r'([\dA-Fa-f:]{17})', line, _re.IGNORECASE)
-        target = None
+        mac_m = _re.search(r'([\dA-Fa-f]{2}(?::[\dA-Fa-f]{2}){5})', line, _re.IGNORECASE)
+        # Prefer IP as the removal key; fall back to MAC for MAC-only blocks.
+        targets = set()
+        if ip_m:
+            targets.add(ip_m.group(1))
         if mac_m:
-            target = mac_m.group(1).upper()
-        elif ip_m:
-            target = ip_m.group(1)
-        if not target:
+            targets.add(mac_m.group(1).upper())
+        if not targets:
             return
         for i in range(self.blocks_list.count() - 1, -1, -1):
-            meta = self.blocks_list.item(i).data(Qt.UserRole)
-            if meta and meta.get("target") == target:
-                self._active_entry_keys.discard(
-                    (meta.get("type"), meta.get("target"), meta.get("chain"), meta.get("state"))
-                )
-                self.blocks_list.takeItem(i)
-            elif target in self.blocks_list.item(i).text():
+            item = self.blocks_list.item(i)
+            if item is None:
+                continue
+            meta = item.data(Qt.UserRole)
+            hit = (meta and (meta.get("target") in targets or meta.get("mac") in targets))
+            if not hit:
+                hit = any(t in item.text() for t in targets)
+            if hit:
                 if meta:
                     self._active_entry_keys.discard(
                         (meta.get("type"), meta.get("target"), meta.get("chain"), meta.get("state"))

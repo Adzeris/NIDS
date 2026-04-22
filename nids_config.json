@@ -11,19 +11,21 @@
   },
   "research": {
     "detect_only": false,
-    "method": "improved"
+    "method": "adaptive"
   },
   "portscan": {
     "window_sec": 5,
     "port_threshold": 10,
     "syn_threshold": 5,
     "slow_window_sec": 120,
-    "slow_port_threshold": 6,
-    "slow_syn_threshold": 6,
+    "slow_port_threshold": 15,
+    "slow_syn_threshold": 15,
     "udp_port_threshold": 8,
     "udp_probe_threshold": 12,
     "udp_window_sec": 10,
-    "block_seconds": 120
+    "block_seconds": 120,
+    "safe_ip_alert_cooldown_sec": 120,
+    "local_sources_only": true
   },
   "bruteforce": {
     "threshold": 5,
@@ -38,7 +40,28 @@
     "block_seconds": 60
   },
   "spoof": {
+    "whitelist_default_gateway": true,
     "arp_watch": true,
+    "arp_burst_watch": true,
+    "arp_burst_threshold": 12,
+    "arp_burst_window_sec": 10,
+    "arp_burst_cooldown": 30,
+    "name_spoof_watch": true,
+    "name_response_threshold": 8,
+    "name_window_sec": 12,
+    "name_query_grace_sec": 3,
+    "name_conflict_window_sec": 20,
+    "name_alert_cooldown": 60,
+    "dhcp_watch": false,
+    "dhcp_offer_threshold": 2,
+    "dhcp_window_sec": 20,
+    "dhcp_alert_cooldown": 60,
+    "dns_spoof_watch": true,
+    "dns_unsolicited_threshold": 5,
+    "dns_window_sec": 20,
+    "dns_query_grace_sec": 4,
+    "dns_conflict_window_sec": 6,
+    "dns_alert_cooldown": 60,
     "gateway_auto_whitelist": false,
     "whitelist_host": false,
     "host_ip": "",
@@ -50,22 +73,31 @@
     "ttl_max_alerts_per_source": 3,
     "ttl_local_only": true,
     "block_seconds": 120,
-    "whitelist_ips": []
+    "whitelist_ips": [],
+    "trusted_name_servers": [],
+    "trusted_dhcp_servers": [],
+    "trusted_dhcp_macs": [],
+    "trusted_dns_servers": [],
+    "trusted_routers": []
   },
   "macfilter": {
-    "mode": "whitelist",
     "allowed_macs": [],
     "blocked_macs": [],
     "detected_macs": [
       {
-        "mac": "00:0C:29:AD:13:B7",
-        "last_ip": "192.168.92.129",
-        "first_seen": "2026-04-16 15:39:38"
+        "mac": "00:50:56:EF:5F:6F",
+        "last_ip": "192.168.92.254",
+        "first_seen": "2026-04-22 14:48:18"
       },
       {
         "mac": "00:50:56:FF:6B:DC",
-        "last_ip": "?",
-        "first_seen": "2026-04-16 15:40:19"
+        "last_ip": "192.168.92.2",
+        "first_seen": "2026-04-22 14:53:54"
+      },
+      {
+        "mac": "00:0C:29:AD:13:B7",
+        "last_ip": "192.168.92.129",
+        "first_seen": "2026-04-22 15:05:37"
       }
     ]
   },

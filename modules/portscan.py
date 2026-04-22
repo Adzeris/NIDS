@@ -3,14 +3,9 @@
 Port scan detector v2.0 — entropy-augmented multi-strategy detection.
 
 Detection strategies:
-  Baseline (threshold-only):  alert when unique ports AND probe count both
-                              exceed fixed thresholds in a sliding window.
-  Improved (entropy-augmented): additionally compute Shannon entropy of the
-      destination-port distribution.  Scanning produces high entropy (uniform
-      access across ports) while normal traffic clusters on a few well-known
-      ports (low entropy).  A weighted confidence score combines port count,
-      probe count, and entropy to catch low-and-slow scans that stay just
-      below individual thresholds.
+  Threshold + entropy scoring: alert when fixed thresholds are exceeded, or
+  when lower-volume traffic looks strongly scan-like based on destination-port
+  entropy and confidence scoring.
 
 Scan types: TCP SYN, Stealth (Xmas/Null/FIN/ACK), UDP probes — each with
 fast and slow detection windows.
@@ -18,18 +13,18 @@ fast and slow detection windows.
 Research features:
   - Per-alert feature vectors (unique_ports, probe_count, port_entropy, ...)
   - Confidence scoring
-  - Baseline / improved mode switching
   - Detect-only mode
 """
 
 from scapy.all import sniff, IP, TCP, UDP, Ether
 import time
 import math
+import ipaddress
 from collections import defaultdict, deque, Counter
 
 from modules.base import BaseDetector, shannon_entropy
 from modules.firewall import ensure_chain, flush_chain, block_ip
-from modules.netutil import get_interface_ip, get_default_gateway
+from modules.netutil import get_interface_ip, collect_trusted_infrastructure_ips
 from modules.detected_mac_persist import persist as persist_detected_mac
 
 
@@ -63,6 +58,8 @@ class PortScanDetector(BaseDetector):
         self.udp_times = defaultdict(deque)
 
         self.blocked_ips = set()
+        # IPs for which we have already logged one "whitelisted — alert only" notice
+        self._safe_ip_notified = set()
         self.stats = {
             'syn_packets': 0, 'stealth_packets': 0,
             'udp_packets': 0, 'blocks': 0,
@@ -71,19 +68,15 @@ class PortScanDetector(BaseDetector):
     # -- helpers -----------------------------------------------------------
 
     def _build_safe_ips(self):
-        cfg = self.cfg
-        iface = cfg['interface']
-        safe = {'0.0.0.0', '255.255.255.255'}
-        if cfg.get('network_mode', 'nat') == 'bridged':
-            gw = get_default_gateway(iface)
-            if gw and cfg.get('spoof', {}).get('gateway_auto_whitelist', True):
-                safe.add(gw)
-            host = cfg.get('spoof', {}).get('host_ip', '').strip()
-            if cfg.get('spoof', {}).get('whitelist_host') and host:
-                safe.add(host)
-        for ip_str in cfg.get('spoof', {}).get('whitelist_ips', []):
-            safe.add(ip_str.strip())
-        return safe
+        return collect_trusted_infrastructure_ips(self.cfg, self.cfg['interface'])
+
+    @staticmethod
+    def _is_local_source(ip_text):
+        try:
+            ip_obj = ipaddress.ip_address(ip_text)
+        except ValueError:
+            return False
+        return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
 
     @staticmethod
     def _prune(ports_dq, times_dq, src, now, window):
@@ -100,6 +93,9 @@ class PortScanDetector(BaseDetector):
         n_unique = len(unique)
         n_probes = len(times_dq[src])
 
+        # Entropy captures how evenly probes are spread across destination ports.
+        # Scans tend to distribute attention broadly, while normal traffic often
+        # clusters around a few stable services.
         entropy = shannon_entropy(port_counter) if n_unique > 1 else 0.0
         max_ent = math.log2(n_unique) if n_unique > 1 else 0.0
         ent_ratio = entropy / max_ent if max_ent > 0 else 0.0
@@ -122,7 +118,9 @@ class PortScanDetector(BaseDetector):
         c_ports = min(1.0, feat['unique_ports'] / max(port_thr, 1))
         c_probes = min(1.0, feat['probe_count'] / max(probe_thr, 1))
 
-        if self.method == 'improved' and feat['unique_ports'] > 2:
+        if feat['unique_ports'] > 2:
+            # Entropy is treated as a third signal rather than a replacement
+            # for the core threshold checks.
             c_ent = min(1.0, feat['port_entropy'] / max(1.5, 0.01))
             conf = 0.35 * c_ports + 0.35 * c_probes + 0.30 * c_ent
         else:
@@ -137,16 +135,14 @@ class PortScanDetector(BaseDetector):
         conf = self._confidence(feat, port_thr, probe_thr)
         feat['confidence'] = conf
 
-        if self.method == 'baseline':
-            triggered = (feat['unique_ports'] >= port_thr
-                         and feat['probe_count'] >= probe_thr)
-        else:
-            triggered = (feat['unique_ports'] >= port_thr
-                         and feat['probe_count'] >= probe_thr)
-            if not triggered:
-                triggered = (conf >= 0.70
-                             and feat['port_entropy'] > 1.0
-                             and feat['unique_ports'] >= max(port_thr // 2, 3))
+        triggered = (feat['unique_ports'] >= port_thr
+                     and feat['probe_count'] >= probe_thr)
+        if not triggered:
+            # Entropy path catches low-and-slow patterns that stay just below
+            # hard threshold counts.
+            triggered = (conf >= 0.70
+                         and feat['port_entropy'] > 1.0
+                         and feat['unique_ports'] >= max(port_thr // 2, 3))
 
         if triggered:
             self._do_alert_block(src, pkt, feat, conf, window, label)
@@ -155,8 +151,14 @@ class PortScanDetector(BaseDetector):
 
     def _do_alert_block(self, src, pkt, feat, conf, window, label):
         src_mac = pkt[Ether].src.upper() if pkt.haslayer(Ether) else 'unknown'
+        if src in self._safe_ips:
+            # Silently drop repeat triggers from whitelisted IPs; we only alert once.
+            if src in self._safe_ip_notified:
+                self._clear_tracking(src)
+                return
+
         msg = (f"{label} scan from {src} / {src_mac} "
-               f"({feat['unique_ports']} ports / {feat['probe_count']} probes "
+               f"({feat['unique_ports']} ports, {feat['probe_count']} probes "
                f"in {window}s, entropy={feat['port_entropy']:.2f})")
 
         self.alert(message=msg, source_ip=src, source_mac=src_mac,
@@ -166,7 +168,8 @@ class PortScanDetector(BaseDetector):
             persist_detected_mac(src_mac, src, lambda m: self._emit(m))
 
         if src in self._safe_ips:
-            self.warn(f"{src} is gateway/whitelisted — alert only")
+            self.warn(f"{src} is whitelisted (gateway) — logged once, will not repeat")
+            self._safe_ip_notified.add(src)
         else:
             blocked = self.block(
                 target=src, reason=f"{label} scan",
@@ -197,6 +200,11 @@ class PortScanDetector(BaseDetector):
         if IP not in pkt:
             return
         src, dst = pkt[IP].src, pkt[IP].dst
+        ps_cfg = self.cfg.get('portscan', {})
+        if ps_cfg.get('local_sources_only', True) and not self._is_local_source(src):
+            # Ignore internet background noise (public cloud/CDN sources) when the
+            # detector is intended for LAN attacker demonstrations.
+            return
         if src in self.blocked_ips:
             return
 
@@ -294,6 +302,7 @@ class PortScanDetector(BaseDetector):
                    self.udp_ports, self.udp_times):
             dq.clear()
         self.blocked_ips.clear()
+        self._safe_ip_notified.clear()
         for k in self.stats:
             self.stats[k] = 0
 

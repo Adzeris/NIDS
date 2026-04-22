@@ -30,7 +30,7 @@ DEFAULTS = {
 
     "research": {
         "detect_only": False,
-        "method": "improved",
+        "method": "adaptive",
     },
 
     "portscan": {
@@ -44,6 +44,11 @@ DEFAULTS = {
         "udp_probe_threshold": 12,
         "udp_window_sec": 10,
         "block_seconds": 120,
+        # Throttle log spam for whitelisted (gateway) sources — same pattern can re-fire
+        # every few seconds as state resets after each alert.
+        "safe_ip_alert_cooldown_sec": 120,
+        # Focus on LAN/private source IPs; ignore public internet background noise.
+        "local_sources_only": True,
     },
 
     "bruteforce": {
@@ -61,7 +66,28 @@ DEFAULTS = {
     },
 
     "spoof": {
+        "whitelist_default_gateway": True,
         "arp_watch": True,
+        "arp_burst_watch": True,
+        "arp_burst_threshold": 12,
+        "arp_burst_window_sec": 10,
+        "arp_burst_cooldown": 30,
+        "name_spoof_watch": True,
+        "name_response_threshold": 8,
+        "name_window_sec": 12,
+        "name_query_grace_sec": 3,
+        "name_conflict_window_sec": 20,
+        "name_alert_cooldown": 60,
+        "dhcp_watch": True,
+        "dhcp_offer_threshold": 2,
+        "dhcp_window_sec": 20,
+        "dhcp_alert_cooldown": 60,
+        "dns_spoof_watch": True,
+        "dns_unsolicited_threshold": 5,
+        "dns_window_sec": 20,
+        "dns_query_grace_sec": 4,
+        "dns_conflict_window_sec": 6,
+        "dns_alert_cooldown": 60,
         "gateway_auto_whitelist": True,
         "whitelist_host": False,
         "host_ip": "",
@@ -74,10 +100,14 @@ DEFAULTS = {
         "ttl_local_only": True,
         "block_seconds": 120,
         "whitelist_ips": [],
+        "trusted_name_servers": [],
+        "trusted_dhcp_servers": [],
+        "trusted_dhcp_macs": [],
+        "trusted_dns_servers": [],
+        "trusted_routers": [],
     },
 
     "macfilter": {
-        "mode": "whitelist",
         "allowed_macs": [],
         "blocked_macs": [],
         "detected_macs": [],

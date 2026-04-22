@@ -3,4 +3,4 @@ __pycache__/
 logs/
 dist/
 .venv/
-results/
+.venv-docimg/

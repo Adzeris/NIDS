@@ -3,14 +3,8 @@
 DoS / volumetric flood detector v2.0 — CUSUM change-point detection.
 
 Detection strategies:
-  Baseline (threshold):  alert when flood packets-per-second from a single
-                         source exceed a fixed threshold in a 1-second sample.
-                         Flood packets are ICMP echo requests plus TCP SYN
-                         packets (SYN without ACK).
-  Improved (CUSUM):      Cumulative Sum change-point algorithm.  Learns a
-      baseline traffic rate during an initial calibration window, then tracks
-      cumulative deviation.  Detects both sudden spikes AND gradual ramp-ups
-      that stay below the static threshold until the flood is fully underway.
+  Threshold + CUSUM: alert on direct packet-rate thresholds, and also track
+  sustained upward drift with CUSUM after a short calibration phase.
 
       S_n = max(0, S_{n-1} + (x_n − μ₀ − k))
       Alarm when S_n > h
@@ -20,7 +14,6 @@ Detection strategies:
 Research features:
   - Per-alert feature vectors (pps, cusum_value, baseline_mean, ...)
   - Confidence scoring
-  - Baseline / improved mode switching
   - Detect-only mode
 """
 
@@ -31,7 +24,7 @@ from collections import defaultdict
 
 from modules.base import BaseDetector, cusum_step, rolling_stats
 from modules.firewall import ensure_chain, flush_chain, block_ip, ts
-from modules.netutil import get_default_gateway, get_interface_ip
+from modules.netutil import get_interface_ip, collect_trusted_infrastructure_ips
 
 
 class DoSDetector(BaseDetector):
@@ -47,6 +40,7 @@ class DoSDetector(BaseDetector):
 
         self.blocked_ips = set()
         self._safe_ips = set()
+        self._safe_ip_notified = set()
 
         # CUSUM state per source
         self._cusum_s = defaultdict(float)
@@ -65,22 +59,11 @@ class DoSDetector(BaseDetector):
         }
 
     def _build_safe_ips(self):
-        cfg = self.cfg
-        iface = cfg['interface']
-        safe = {'0.0.0.0', '255.255.255.255'}
-        if cfg.get('network_mode', 'nat') == 'bridged':
-            gw = get_default_gateway(iface)
-            if gw and cfg.get('spoof', {}).get('gateway_auto_whitelist', True):
-                safe.add(gw)
-            host = cfg.get('spoof', {}).get('host_ip', '').strip()
-            if cfg.get('spoof', {}).get('whitelist_host') and host:
-                safe.add(host)
-        for ip_str in cfg.get('spoof', {}).get('whitelist_ips', []):
-            safe.add(ip_str.strip())
-        return safe
+        return collect_trusted_infrastructure_ips(self.cfg, self.cfg['interface'])
 
     @staticmethod
     def _count_flood_packets_by_source(iface, monitored_ip=None):
+        """Sample one second of ICMP echo and TCP SYN traffic by source IP."""
         cmd = ["sudo", "timeout", "1", "tcpdump", "-n", "-i", iface, "icmp or tcp"]
         proc = subprocess.run(cmd, capture_output=True, text=True)
         counts = defaultdict(int)
@@ -133,9 +116,7 @@ class DoSDetector(BaseDetector):
     def _confidence(self, feat, threshold):
         c_threshold = min(1.0, feat['source_pps'] / max(threshold, 1))
 
-        if (self.method == 'improved'
-                and self._baseline_mean is not None
-                and self._baseline_mean > 0):
+        if self._baseline_mean is not None and self._baseline_mean > 0:
             h = self._baseline_mean * 5
             c_cusum = min(1.0, feat['cusum_value'] / max(h, 1.0))
             conf = 0.50 * c_threshold + 0.50 * c_cusum
@@ -147,6 +128,7 @@ class DoSDetector(BaseDetector):
 
     def reset_state(self):
         self.blocked_ips.clear()
+        self._safe_ip_notified.clear()
         self._cusum_s.clear()
         self._rate_history.clear()
         self._global_samples.clear()
@@ -194,6 +176,8 @@ class DoSDetector(BaseDetector):
                 self._global_samples.append(total)
                 if (self._baseline_mean is None
                         and len(self._global_samples) >= self.CALIBRATION_SAMPLES):
+                    # Learn background traffic rate from opening samples before
+                    # change-point logic is enabled.
                     mean, _ = rolling_stats(self._global_samples)
                     self._baseline_mean = max(mean, 1.0)
 
@@ -222,32 +206,28 @@ class DoSDetector(BaseDetector):
                     feat['confidence'] = conf
 
                     # Decision
-                    if self.method == 'baseline':
-                        triggered = (
-                            pps > threshold
-                            or icmp_pps > threshold
-                            or syn_pps > syn_threshold
-                        )
-                    else:
-                        triggered = (
-                            pps > threshold
-                            or icmp_pps > threshold
-                            or syn_pps > syn_threshold
-                        )
-                        if (not triggered
-                                and self._baseline_mean is not None):
-                            h = self._baseline_mean * 5
-                            triggered = pps >= min_pps_for_cusum and cusum_val > h
+                    triggered = (
+                        pps > threshold
+                        or icmp_pps > threshold
+                        or syn_pps > syn_threshold
+                    )
+                    if (not triggered
+                            and self._baseline_mean is not None):
+                        # CUSUM complements static thresholds by accumulating
+                        # evidence of sustained positive drift.
+                        h = self._baseline_mean * 5
+                        triggered = pps >= min_pps_for_cusum and cusum_val > h
 
                     if triggered:
-                        msg = (f"DoS flood from {src_ip}: {pps} pps"
-                               f" (icmp={icmp_pps}, syn={syn_pps})"
-                               f" (CUSUM={cusum_val:.1f})")
+                        msg = (f"DoS flood from {src_ip} — {pps} pps"
+                               f"  [ICMP={icmp_pps}, SYN={syn_pps}]")
                         self.alert(message=msg, source_ip=src_ip,
                                    confidence=conf, features=feat)
 
                         if src_ip in self._safe_ips:
-                            self.warn(f"{src_ip} is gateway/whitelisted — alert only")
+                            if src_ip not in self._safe_ip_notified:
+                                self.warn(f"{src_ip} is whitelisted (gateway) — logged once, will not repeat")
+                                self._safe_ip_notified.add(src_ip)
                         else:
                             blocked = self.block(
                                 target=src_ip, reason="DoS flood",

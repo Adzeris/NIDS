@@ -3,20 +3,14 @@
 Brute-force detector v2.0 — temporal-pattern-augmented authentication attack detection.
 
 Detection strategies:
-  Baseline (count-threshold): alert when failure count exceeds threshold
-                              within a sliding time window.
-  Improved (IAT-augmented):   additionally analyse inter-arrival times of
-      failure events.  Automated tools (Hydra, Medusa) produce highly regular
-      attempt spacing (low coefficient of variation) while legitimate users
-      failing passwords produce irregular spacing (high CV).  The combined
-      signal catches automated attacks earlier and with higher confidence.
+  Count + timing regularity: alert on threshold breach, and additionally use
+  inter-arrival regularity to catch scripted automation earlier.
 
 Services: SSH (journalctl) + FTP (auth/vsftpd/proftpd logs).
 
 Research features:
   - Per-alert feature vectors (failure_count, mean_iat, cv_iat, burst_score, ...)
   - Confidence scoring
-  - Baseline / improved mode switching
   - Detect-only mode
 """
 
@@ -30,7 +24,7 @@ from collections import defaultdict
 
 from modules.base import BaseDetector, inter_arrival_times, rolling_stats
 from modules.firewall import ensure_chain, flush_chain, block_ip, ts
-from modules.netutil import get_default_gateway
+from modules.netutil import collect_trusted_infrastructure_ips
 
 
 class BruteForceDetector(BaseDetector):
@@ -61,6 +55,7 @@ class BruteForceDetector(BaseDetector):
         self.failures_ftp = defaultdict(list)
         self.blocked_ips = set()
         self._safe_ips = set()
+        self._safe_ip_notified = set()
         self._block_lock = threading.Lock()
 
         self.stats = {'ssh_lines': 0, 'ftp_lines': 0, 'blocks': 0}
@@ -68,28 +63,19 @@ class BruteForceDetector(BaseDetector):
     # -- safe-IP logic -----------------------------------------------------
 
     def _build_safe_ips(self):
-        cfg = self.cfg
-        iface = cfg['interface']
-        safe = {'0.0.0.0', '255.255.255.255'}
-        if cfg.get('network_mode', 'nat') == 'bridged':
-            gw = get_default_gateway(iface)
-            if gw and cfg.get('spoof', {}).get('gateway_auto_whitelist', True):
-                safe.add(gw)
-            host = cfg.get('spoof', {}).get('host_ip', '').strip()
-            if cfg.get('spoof', {}).get('whitelist_host') and host:
-                safe.add(host)
-        for ip_str in cfg.get('spoof', {}).get('whitelist_ips', []):
-            safe.add(ip_str.strip())
-        return safe
+        return collect_trusted_infrastructure_ips(self.cfg, self.cfg['interface'])
 
     # -- feature extraction ------------------------------------------------
 
     def _iat_features(self, timestamps, service):
+        """Summarize timing regularity for repeated authentication failures."""
         iats = inter_arrival_times(sorted(timestamps))
         if not iats:
             return {'service': service, 'iat_count': 0}
 
         mean_iat, std_iat = rolling_stats(iats)
+        # Lower coefficient of variation means more regular spacing, which is a
+        # useful signature for scripted brute-force tools.
         cv_iat = std_iat / mean_iat if mean_iat > 0 else 0.0
         min_iat = min(iats)
         failure_rate = len(timestamps) / max(timestamps[-1] - timestamps[0], 0.01)
@@ -108,7 +94,7 @@ class BruteForceDetector(BaseDetector):
     def _confidence(self, feat, threshold, window):
         c_count = min(1.0, feat.get('failure_count', 0) / max(threshold, 1))
 
-        if self.method == 'improved' and feat.get('iat_count', 0) >= 2:
+        if feat.get('iat_count', 0) >= 2:
             # Low CV = regular spacing = automated tool = higher confidence
             cv = feat.get('cv_iat', 1.0)
             c_automation = max(0.0, 1.0 - cv) if cv < 1.5 else 0.0
@@ -128,15 +114,12 @@ class BruteForceDetector(BaseDetector):
             conf = self._confidence(feat, threshold, window)
             feat['confidence'] = conf
 
-            if self.method == 'baseline':
-                triggered = len(timestamps) >= threshold
-            else:
-                triggered = len(timestamps) >= threshold
-                if not triggered:
-                    # Automated tool signature: many attempts with very regular spacing
-                    triggered = (len(timestamps) >= max(threshold // 2, 3)
-                                 and conf >= 0.75
-                                 and feat.get('cv_iat', 1.0) < 0.3)
+            triggered = len(timestamps) >= threshold
+            if not triggered:
+                # Early trigger for highly regular automated attempts.
+                triggered = (len(timestamps) >= max(threshold // 2, 3)
+                             and conf >= 0.75
+                             and feat.get('cv_iat', 1.0) < 0.3)
 
             if not triggered:
                 return
@@ -148,7 +131,9 @@ class BruteForceDetector(BaseDetector):
                        features=feat)
 
             if ip in self._safe_ips:
-                self.warn(f"{ip} is gateway/whitelisted — alert only")
+                if ip not in self._safe_ip_notified:
+                    self.warn(f"{ip} is whitelisted (gateway) — logged once, will not repeat")
+                    self._safe_ip_notified.add(ip)
             else:
                 blocked = self.block(
                     target=ip, reason=f"{service} brute force",
@@ -274,6 +259,7 @@ class BruteForceDetector(BaseDetector):
         self.failures_ssh.clear()
         self.failures_ftp.clear()
         self.blocked_ips.clear()
+        self._safe_ip_notified.clear()
         for k in self.stats:
             self.stats[k] = 0
 

@@ -53,10 +53,7 @@ def _git_commit():
 
 
 class NIDSEngine:
-    """
-    Central engine that manages detector instances and funnels their
-    log output through a single callback.
-    """
+    """Central engine that manages detector instances and funnels their log output through a single callback. """
 
     def __init__(self, cfg=None, log_callback=None):
         self.cfg = cfg or load_config()
@@ -164,7 +161,7 @@ class NIDSEngine:
             'run_id': self.run_id,
             'config_hash': self.cfg_hash,
             'git_commit': self.git_commit,
-            'method': self.cfg.get('research', {}).get('method', 'improved'),
+            'method': self.cfg.get('research', {}).get('method', 'adaptive'),
             'detect_only': self.cfg.get('research', {}).get('detect_only', False),
         }
 

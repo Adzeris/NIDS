@@ -74,6 +74,70 @@ def get_default_gateway(ifname=None):
     return None
 
 
+def collect_trusted_infrastructure_ips(cfg, iface):
+    """
+    IP addresses the detectors should not *block* when they are the source:
+    local gateway (optional), optional bridged host, and manual whitelist.
+    (Alerts may still be logged depending on the module; see detect_only in research.)
+    """
+    sp = cfg.get('spoof', {})
+    out = {'0.0.0.0', '255.255.255.255'}
+    if sp.get('whitelist_default_gateway', True):
+        gw = get_default_gateway(iface)
+        if gw:
+            out.add(gw)
+    if cfg.get('network_mode', 'nat') == 'bridged':
+        host = sp.get('host_ip', '').strip()
+        if sp.get('whitelist_host') and host:
+            out.add(host)
+    for s in sp.get('whitelist_ips', []):
+        s = s.strip()
+        if s:
+            out.add(s)
+    return out
+
+
+def get_neighbor_mac(ip, ifname):
+    """
+    L2 (MAC) address for an IPv4 neighbor, if the kernel has one on this interface.
+    Used so policy modules can recognize frames that arrived via the default gateway
+    (L3 src may be a remote host while Ethernet src is the router's MAC).
+    """
+    if not ip or not ifname:
+        return None
+    try:
+        out = subprocess.check_output(
+            ["ip", "neigh", "show", ip, "dev", ifname], text=True, timeout=3
+        )
+        for line in out.splitlines():
+            parts = line.split()
+            if "lladdr" in parts:
+                i = parts.index("lladdr")
+                if i + 1 < len(parts):
+                    return parts[i + 1].upper()
+    except Exception:
+        pass
+    try:
+        with open("/proc/net/arp", "r", encoding="utf-8", errors="replace") as f:
+            for line in f.readlines()[1:]:
+                parts = line.split()
+                if len(parts) >= 6 and parts[0] == ip and parts[5] == ifname:
+                    return parts[3].upper()
+    except Exception:
+        pass
+    return None
+
+
+def get_default_gateway_mac(ifname, gw_ip=None):
+    """
+    MAC address of the default gateway for this interface, if resolvable.
+    """
+    g = gw_ip or get_default_gateway(ifname)
+    if not g:
+        return None
+    return get_neighbor_mac(g, ifname)
+
+
 def list_interfaces():
     """Return known interface names."""
     names = []

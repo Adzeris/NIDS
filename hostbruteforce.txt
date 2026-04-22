@@ -1,1 +1,17 @@
-sudo systemctl start ssh
+
+1. ONE-TIME DEFENDER PREP (KALI DEFENDER VM)
+
+bash /home/kali/Desktop/nids_edit_metasploit/bruteforce_prep.sh
+
+What this does:
+- Installs/starts SSH service
+- Creates test user: nids_test_user
+- Sets password auth for lab testing
+
+
+
+2. BEFORE EACH TEST SESSION (DEFENDER)
+
+sudo systemctl is-active ssh
+sudo ss -tulpn | grep -E ':22([[:space:]]|$)'
+sudo journalctl -u ssh -n 10 --no-pager

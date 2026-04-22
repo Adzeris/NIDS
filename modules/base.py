@@ -4,7 +4,7 @@ Base detector interface for the NIDS research platform (v4.0).
 
 Provides:
   - BaseDetector: abstract base class with structured event emission,
-    confidence scoring, baseline/improved mode switching, and detect-only mode
+    confidence scoring, adaptive signal scoring, and detect-only mode
   - DetectionEvent: structured event with feature vector and research metadata
   - Statistical utilities: Shannon entropy, Z-score, rolling statistics,
     inter-arrival times, CUSUM change-point detection
@@ -68,8 +68,7 @@ class BaseDetector:
     Subclasses must set NAME, VERSION, CHAIN and implement run().
     Detection behaviour is controlled by two research settings:
       detect_only  – if True, alerts are emitted but blocking is suppressed
-      method       – 'baseline' uses the original threshold logic;
-                     'improved' activates the enhanced algorithm
+      method       – logical algorithm profile tag for event metadata
     """
 
     NAME = 'base'
@@ -86,7 +85,8 @@ class BaseDetector:
 
         research = cfg.get('research', {})
         self.detect_only = research.get('detect_only', False)
-        self.method = research.get('method', 'improved')
+        # Runtime detection behavior uses one adaptive profile only.
+        self.method = 'adaptive'
 
     # -- Logging -----------------------------------------------------------
 
@@ -175,7 +175,13 @@ class BaseDetector:
 # ---------------------------------------------------------------------------
 
 def shannon_entropy(counts):
-    """Shannon entropy H = -Σ p_i·log₂(p_i) from a {value: count} mapping."""
+    """Compute Shannon entropy from a ``{value: count}`` mapping.
+
+    In this project the function is used mainly for destination-port
+    distributions. A high value suggests traffic spread across many ports,
+    which is a useful scan signal; a low value suggests concentration on a
+    small set of services, which is more typical of ordinary client behavior.
+    """
     total = sum(counts.values())
     if total <= 0:
         return 0.0
@@ -188,12 +194,21 @@ def shannon_entropy(counts):
 
 
 def z_score(value, mean, std):
-    """Absolute Z-score.  Returns 0 when std is zero."""
+    """Return the absolute Z-score of ``value`` relative to ``mean``/``std``.
+
+    The helper returns ``0.0`` when ``std`` is zero so detector code can treat
+    "no observed variation yet" as "no statistical anomaly yet" instead of
+    failing on division by zero.
+    """
     return abs(value - mean) / std if std > 0 else 0.0
 
 
 def rolling_stats(values):
-    """(mean, std) with Bessel-corrected std for a numeric sequence."""
+    """Return ``(mean, std)`` for a numeric sample sequence.
+
+    The standard deviation uses Bessel's correction (``n - 1``) because the
+    tracked values are empirical samples rather than a full population.
+    """
     n = len(values)
     if n == 0:
         return 0.0, 0.0
@@ -205,15 +220,24 @@ def rolling_stats(values):
 
 
 def inter_arrival_times(timestamps):
-    """Sorted timestamp list → list of inter-arrival deltas."""
+    """Convert event timestamps into inter-arrival deltas.
+
+    Inter-arrival times are useful for spotting automation: repeated actions
+    that arrive with very regular spacing tend to indicate scripted tools
+    rather than organic human behavior.
+    """
     if len(timestamps) < 2:
         return []
     return [timestamps[i] - timestamps[i - 1] for i in range(1, len(timestamps))]
 
 
 def cusum_step(prev_sum, observation, expected, slack):
-    """One step of the upper-side CUSUM algorithm.
-    Returns the new cumulative sum (clamped ≥ 0)."""
+    """Advance the one-sided CUSUM statistic by one observation.
+
+    ``expected`` is the learned baseline rate and ``slack`` is the tolerated
+    deviation before the running sum starts to grow. Clamping at zero keeps the
+    statistic focused on sustained positive drift instead of isolated spikes.
+    """
     return max(0.0, prev_sum + (observation - expected - slack))
 
 
