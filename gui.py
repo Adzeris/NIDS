@@ -22,7 +22,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QPointF
 from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette, QPainter, QPen, QBrush
 
 from config import load_config, save_config
-from modules.netutil import list_interfaces
+from modules.host_network import list_interfaces
 
 APP_VERSION = "4.0"
 
@@ -289,7 +289,7 @@ class MainWindow(QMainWindow):
         self._dismissed_macs = set()
         self._active_entry_keys = set()
 
-        self.setWindowTitle(f"Network Intrusion Detection System — v{APP_VERSION}")
+        self.setWindowTitle(f"Network Intrusion Detection System v{APP_VERSION}")
         self.setMinimumSize(960, 640)
         self.setStyleSheet(DARK_STYLE)
 
@@ -811,13 +811,6 @@ class MainWindow(QMainWindow):
         lay.setSpacing(12)
         lay.setContentsMargins(10, 10, 10, 10)
 
-        detect_note = QLabel(
-            "Detected MACs are collected by active detectors (e.g. Port Scan / Spoof). "
-        )
-        detect_note.setWordWrap(True)
-        detect_note.setStyleSheet("color: #8b949e; font-size: 11px;")
-        lay.addWidget(detect_note)
-
         # Detected / Pending Review
         det_grp = QGroupBox("Detected MACs (Pending Review)")
         det_lay = QVBoxLayout(det_grp)
@@ -897,14 +890,17 @@ class MainWindow(QMainWindow):
         title.setAlignment(Qt.AlignCenter)
         lay.addWidget(title)
 
-        subtitle = QLabel(f"Network Intrusion Detection System — v{APP_VERSION}")
+        subtitle = QLabel(f"Network Intrusion Detection System v{APP_VERSION}")
         subtitle.setStyleSheet("font-size: 15px; color: #c9d1d9;")
         subtitle.setAlignment(Qt.AlignCenter)
         lay.addWidget(subtitle)
 
         lay.addSpacing(8)
 
-        desc = QLabel("A modular NIDS research platform for evaluating and comparing network intrusion detection algorithms with reproducible experiments.")
+        desc = QLabel(
+            "A modular research platform for live network monitoring, "
+            "reproducible intrusion-detection experiments, and defensive response evaluation."
+        )
         desc.setAlignment(Qt.AlignCenter)
         desc.setWordWrap(True)
         desc.setStyleSheet("font-size: 13px; color: #8b949e;")
@@ -912,17 +908,17 @@ class MainWindow(QMainWindow):
 
         lay.addSpacing(4)
 
-        modules_label = QLabel("Detection Modules (v2.0)")
+        modules_label = QLabel("Core Detection Modules")
         modules_label.setAlignment(Qt.AlignCenter)
         modules_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #58a6ff;")
         lay.addWidget(modules_label)
 
         modules = QLabel(
-            "Port Scan — Entropy-augmented multi-strategy (SYN, stealth, UDP)\n"
-            "Brute-Force — IAT temporal-pattern analysis (SSH + FTP)\n"
-            "DoS / Flood — CUSUM change-point detection (ICMP)\n"
-            "IP Spoof — ARP/TTL + DNS/LLMNR/mDNS/NBNS + DHCP (multi-signal)\n"
-            "MAC Filter — Policy enforcement with research instrumentation"
+            "Port Scan - TCP SYN, stealth, and UDP scan detection with entropy profiling\n"
+            "Brute Force - SSH/FTP login attack detection with timing-pattern analysis\n"
+            "DoS / Flood - ICMP and SYN flood detection with change-point monitoring\n"
+            "IP Spoofing - ARP, DNS, DHCP, and TTL anomaly detection\n"
+            "MAC Filtering - Allow/block policy enforcement with event instrumentation"
         )
         modules.setAlignment(Qt.AlignCenter)
         modules.setStyleSheet("font-size: 12px; color: #8b949e; line-height: 1.6;")

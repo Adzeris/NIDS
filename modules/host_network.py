@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Network utility helpers (interface IP, netmask, gateway, etc.).
+Local host network facts: interface addresses, routing, neighbors, trusted IPs.
 """
 
 import socket

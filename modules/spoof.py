@@ -16,9 +16,9 @@ import time
 import ipaddress
 from collections import defaultdict, deque
 
-from modules.base import BaseDetector, z_score, rolling_stats, inter_arrival_times
+from modules.detector_base import BaseDetector, z_score, rolling_stats, inter_arrival_times
 from modules.firewall import ensure_chain, flush_chain, block_ip, block_mac
-from modules.netutil import (
+from modules.host_network import (
     get_interface_ip,
     get_local_network,
     get_default_gateway,

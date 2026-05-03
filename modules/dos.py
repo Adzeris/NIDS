@@ -22,9 +22,9 @@ import time
 import re
 from collections import defaultdict
 
-from modules.base import BaseDetector, cusum_step, rolling_stats
+from modules.detector_base import BaseDetector, cusum_step, rolling_stats
 from modules.firewall import ensure_chain, flush_chain, block_ip, ts
-from modules.netutil import get_interface_ip, collect_trusted_infrastructure_ips
+from modules.host_network import get_interface_ip, collect_trusted_infrastructure_ips
 
 
 class DoSDetector(BaseDetector):

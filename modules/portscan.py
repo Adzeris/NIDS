@@ -22,9 +22,9 @@ import math
 import ipaddress
 from collections import defaultdict, deque, Counter
 
-from modules.base import BaseDetector, shannon_entropy
+from modules.detector_base import BaseDetector, shannon_entropy
 from modules.firewall import ensure_chain, flush_chain, block_ip
-from modules.netutil import get_interface_ip, collect_trusted_infrastructure_ips
+from modules.host_network import get_interface_ip, collect_trusted_infrastructure_ips
 from modules.detected_mac_persist import persist as persist_detected_mac
 
 

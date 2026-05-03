@@ -58,9 +58,9 @@
 
 | File | Role |
 |------|------|
-| `modules/base.py` | `BaseDetector` abstract class, `DetectionEvent` structure, shared statistical utilities (entropy, Z-score, CUSUM, IAT) |
+| `modules/detector_base.py` | `BaseDetector` abstract class, `DetectionEvent` structure, shared statistical utilities (entropy, Z-score, CUSUM, IAT) |
 | `modules/firewall.py` | iptables chain management, block/unblock helpers |
-| `modules/netutil.py` | Interface IP lookup, gateway resolution, trusted infrastructure IP collection |
+| `modules/host_network.py` | Interface IP lookup, gateway resolution, trusted infrastructure IP collection |
 | `modules/arpnft.py` | nftables L2 ARP drop rules |
 | `modules/detected_mac_persist.py` | Persists detected MACs to GUI review panel |
 | `engine.py` | Central orchestrator — starts detector threads, collects events, manages lifecycle |
@@ -85,14 +85,14 @@ config.py / nids_config.json  Unified configuration
 gui.py                      PyQt5 desktop interface
 
 modules/
-  base.py                   BaseDetector + statistical utilities
+  detector_base.py          BaseDetector + statistical utilities
   portscan.py               Port scan — entropy-augmented, fast + slow windows
   bruteforce.py             Brute force — failure count + IAT analysis (SSH + FTP)
   dos.py                    DoS flood — threshold + CUSUM
   spoof.py                  Spoof — ARP, LLMNR, mDNS, NBNS, DHCP, DNS, TTL, Bogon
   macfilter.py              MAC filter — explicit blocklist
   firewall.py               iptables / nftables helpers
-  netutil.py                Network utilities and trusted IP resolution
+  host_network.py           Local network facts and trusted IP resolution
   arpnft.py                 nftables ARP drop
   detected_mac_persist.py   MAC persistence for GUI
 

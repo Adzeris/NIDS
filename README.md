@@ -33,23 +33,26 @@ Scan types detected: TCP SYN, Xmas, Null, FIN, ACK (stealth), UDP probes — wit
 ```
 NIDS 4.0.desktop         Double-click to launch the app (runs nids.sh). Run installer once
                            so paths/icons are correct (see installer/ below).
+nids-desktop-exec.sh     Desktop-launch helper used by NIDS 4.0.desktop
+nids_config.json         Saved GUI/module configuration
 installer/
   install.sh               Full installer (venv, pip, menu shortcut, rewrites launchers)
   Install NIDS.desktop     Double-click runs install.sh next to it
+  installer-desktop-exec.sh Desktop-launch helper used by Install NIDS.desktop
 
 engine.py                  Central orchestrator — starts detector threads, collects events
 config.py                  Unified configuration with schema versioning
 gui.py                     PyQt5 desktop interface
 
 modules/
-  base.py                  BaseDetector class + statistical utilities (entropy, Z-score, CUSUM, IAT)
+  detector_base.py         BaseDetector class + statistical utilities (entropy, Z-score, CUSUM, IAT)
   portscan.py              PortScanDetector  — entropy-augmented multi-strategy
   bruteforce.py            BruteForceDetector — IAT temporal-pattern analysis
   dos.py                   DoSDetector — CUSUM change-point detection
   spoof.py                 SpoofDetector — Z-score TTL + multi-signal confidence
   macfilter.py             MACFilterDetector — policy enforcement
   firewall.py              Shared iptables helpers
-  netutil.py               Network utility functions
+  host_network.py          Local host network facts (interfaces, gateway, neighbors)
   arpnft.py                nftables ARP/L2 drop
   detected_mac_persist.py  MAC persistence for GUI review
 
@@ -62,7 +65,7 @@ modules/
 pip install -r requirements.txt
 
 # Run with GUI (needs root for packet capture)
-sudo python3 gui.py
+./nids.sh
 
 # Or run headless
 sudo python3 engine.py
@@ -74,19 +77,25 @@ sudo python3 engine.py
 
 | File | Purpose |
 |------|---------|
-| **`NIDS 4.0.desktop`** (repo root) | Double-click to **start NIDS** (`nids.sh`). |
-| **`installer/Install NIDS.desktop`** | Double-click to **run the installer** (venv + menu shortcut). |
+| **`NIDS 4.0.desktop`** (repo root) | Double-click to **start NIDS** through `nids-desktop-exec.sh` -> `nids.sh`. |
+| **`installer/Install NIDS.desktop`** | Double-click to **run the installer** through `installer-desktop-exec.sh` -> `install.sh`. |
 
 **One-time setup** (venv + correct icon + rewritten `NIDS 4.0.desktop`):
 ```bash
-chmod +x installer/install.sh nids.sh
+chmod +x installer/install.sh installer/installer-desktop-exec.sh nids.sh nids-desktop-exec.sh
 ./installer/install.sh
 ```
 
 On **GNOME**, if double-click does nothing, right-click the `.desktop` → **Allow launching**.
+On **XFCE/Thunar**, launchers must be executable and trusted; the installer sets the XFCE trust checksum automatically.
+If you move or rename the project folder, run `./installer/install.sh` once from the new location to refresh paths, icons, permissions, and launchers.
 
 **Run NIDS manually:** `./nids.sh`  
 **Install manually:** `./installer/install.sh` (or double-click `installer/Install NIDS.desktop`)
+
+## Configuration
+
+Runtime settings edited in the GUI are saved to `nids_config.json`. This includes interface/network mode, enabled modules, thresholds, spoof settings, logging path, and MAC allow/block/detected lists.
 
 ## Evaluation Note
 

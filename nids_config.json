@@ -81,28 +81,25 @@
     "trusted_routers": []
   },
   "macfilter": {
-    "allowed_macs": [],
+    "allowed_macs": [
+      "00:50:56:FF:6B:DC"
+    ],
     "blocked_macs": [],
     "detected_macs": [
       {
-        "mac": "00:50:56:EF:5F:6F",
-        "last_ip": "192.168.92.254",
-        "first_seen": "2026-04-22 14:48:18"
-      },
-      {
-        "mac": "00:50:56:FF:6B:DC",
-        "last_ip": "192.168.92.2",
-        "first_seen": "2026-04-22 14:53:54"
-      },
-      {
         "mac": "00:0C:29:AD:13:B7",
         "last_ip": "192.168.92.129",
-        "first_seen": "2026-04-22 15:05:37"
+        "first_seen": "2026-04-24 16:07:17"
+      },
+      {
+        "mac": "00:50:56:C0:00:08",
+        "last_ip": "192.168.92.1",
+        "first_seen": "2026-05-03 22:31:10"
       }
     ]
   },
   "logging": {
-    "log_dir": "/home/kali/Desktop/nids_edit_metasploit/logs",
+    "log_dir": "/home/kali/Desktop/NIDS 4.0/logs",
     "log_to_file": true
   }
 }

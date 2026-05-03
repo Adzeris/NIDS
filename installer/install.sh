@@ -11,22 +11,34 @@ echo "  NIDS Installer"
 echo "=============================="
 echo ""
 
+trust_desktop_file() {
+  local file="$1"
+  [ -f "$file" ] || return 0
+  chmod +x "$file" 2>/dev/null || true
+  gio set "$file" metadata::trusted true 2>/dev/null || true
+  if command -v sha256sum &>/dev/null; then
+    local checksum
+    checksum="$(sha256sum "$file" | awk '{print $1}')"
+    gio set "$file" metadata::xfce-exe-checksum "$checksum" 2>/dev/null || true
+  fi
+}
+
 # One desktop launcher in installer/ — runs this script next to it.
 write_installer_desktop() {
   mkdir -p "$INSTALLER_DIR"
-  cat > "$INSTALLER_DIR/Install NIDS.desktop" <<'EOF'
+  cat > "$INSTALLER_DIR/Install NIDS.desktop" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
 Name=Install NIDS
 Comment=Set up Python venv and add NIDS to your app menu.
-Exec=/bin/bash -c "exec \"\\$(dirname \"\\$(readlink -f \\\"%k\\\")\")/install.sh\""
+Exec=/bin/bash "$INSTALLER_DIR/installer-desktop-exec.sh"
 Terminal=true
 Categories=Utility;
 Keywords=install;nids;security;
 Icon=system-software-install
 EOF
-  chmod +x "$INSTALLER_DIR/Install NIDS.desktop" 2>/dev/null || true
+  trust_desktop_file "$INSTALLER_DIR/Install NIDS.desktop"
 }
 
 write_project_launcher() {
@@ -35,16 +47,16 @@ write_project_launcher() {
 Version=1.0
 Type=Application
 Name=NIDS 4.0
-Comment=Network Intrusion Detection System — Research Platform
-Exec=$ROOT/nids.sh
-Path=$ROOT
-Icon=$ROOT/icons/nids.png
+Comment=Network Intrusion Detection System - Research Platform
+Exec=/bin/bash "$ROOT/nids-desktop-exec.sh"
+Icon=nids
+GenericName=Network Intrusion Detection
 Terminal=false
 Categories=Network;
 Keywords=firewall;intrusion;detection;nids;
 StartupNotify=false
 EOF
-  chmod +x "$ROOT/NIDS 4.0.desktop" 2>/dev/null || true
+  trust_desktop_file "$ROOT/NIDS 4.0.desktop"
 }
 
 # Old layout had install at repo root; safe to remove after migration.
@@ -72,8 +84,8 @@ if [[ -f "$ROOT/requirements.txt" ]]; then
   if [[ ! -x "$VENV/bin/python3" ]]; then
     python3 -m venv "$VENV"
   fi
-  "$VENV/bin/pip" install --upgrade pip -q
-  if ! "$VENV/bin/pip" install -r "$ROOT/requirements.txt"; then
+  "$VENV/bin/python3" -m pip install --upgrade pip -q
+  if ! "$VENV/bin/python3" -m pip install -r "$ROOT/requirements.txt"; then
     echo "[ERROR] pip install failed."
     read -rp "Press Enter to exit..."
     exit 1
@@ -93,7 +105,7 @@ if [[ -f "$ROOT/icons/nids.png" ]]; then
   fi
 fi
 
-chmod +x "$INSTALLER_DIR/install.sh" "$ROOT/nids.sh" "$INSTALLER_DIR/Install NIDS.desktop" 2>/dev/null || true
+chmod +x "$INSTALLER_DIR/install.sh" "$INSTALLER_DIR/installer-desktop-exec.sh" "$ROOT/nids.sh" "$ROOT/nids-root.sh" "$ROOT/nids-desktop-exec.sh" "$INSTALLER_DIR/Install NIDS.desktop" 2>/dev/null || true
 echo "[OK] Permissions set"
 
 VERSION="$(sed -n 's/^APP_VERSION[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/gui.py" | head -n1)"
@@ -107,8 +119,8 @@ Version=1.0
 Type=Application
 Name=NIDS v${VERSION}
 Comment=Network Intrusion Detection System
-Exec=${ROOT}/nids.sh
-Icon=${ROOT}/icons/nids.png
+Exec=/bin/bash "${ROOT}/nids.sh"
+Icon=nids
 Terminal=false
 Categories=Network;Security;System;
 Keywords=firewall;intrusion;detection;network;security;

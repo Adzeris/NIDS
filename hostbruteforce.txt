@@ -1,7 +1,7 @@
 
 1. ONE-TIME DEFENDER PREP (KALI DEFENDER VM)
 
-bash /home/kali/Desktop/nids_edit_metasploit/bruteforce_prep.sh
+bash "/home/kali/Desktop/NIDS 4.0/bruteforce_prep.sh"
 
 What this does:
 - Installs/starts SSH service

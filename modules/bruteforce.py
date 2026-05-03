@@ -22,9 +22,9 @@ import os
 import threading
 from collections import defaultdict
 
-from modules.base import BaseDetector, inter_arrival_times, rolling_stats
+from modules.detector_base import BaseDetector, inter_arrival_times, rolling_stats
 from modules.firewall import ensure_chain, flush_chain, block_ip, ts
-from modules.netutil import collect_trusted_infrastructure_ips
+from modules.host_network import collect_trusted_infrastructure_ips
 
 
 class BruteForceDetector(BaseDetector):

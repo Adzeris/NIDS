@@ -10,9 +10,9 @@ emits structured events for alert/block history.
 from scapy.all import sniff, Ether, IP
 import time
 
-from modules.base import BaseDetector
+from modules.detector_base import BaseDetector
 from modules.firewall import ensure_chain, flush_chain, block_mac, unblock_mac
-from modules.netutil import (
+from modules.host_network import (
     get_interface_ip,
     collect_trusted_infrastructure_ips,
     get_default_gateway,

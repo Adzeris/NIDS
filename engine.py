@@ -22,8 +22,8 @@ import uuid
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import load_config
-from modules.base import config_hash as _config_hash
-from modules.netutil import resolve_capture_interface
+from modules.detector_base import config_hash as _config_hash
+from modules.host_network import resolve_capture_interface
 
 from modules.portscan import PortScanDetector
 from modules.bruteforce import BruteForceDetector
