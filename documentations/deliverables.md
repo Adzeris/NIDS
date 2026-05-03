@@ -2,7 +2,7 @@
 
 **Author:** MD Saadman Kabir  
 **ID:** 25502701  
-**Current Version:** v4.0
+**Current Version:** v5.0
 
 ---
 
@@ -27,7 +27,7 @@
 - Slow-scan detection window (separate threshold for low-and-slow patterns)
 - GUI crash fixes for fresh installations
 
-### v4.0 — Current: Adaptive Detection Platform
+### v4.0 — Adaptive Detection Platform
 - Unified adaptive detection method across all modules (entropy, CUSUM, Z-score, IAT)
 - Expanded spoof detector: ARP reply burst, LLMNR/mDNS/NBNS spoof, Rogue DHCP, DNS spoof
 - Gateway auto-whitelisting with `whitelist_default_gateway` config option
@@ -39,6 +39,16 @@
 - Attacker GUI (`msp_att/`) with Metasploit and generic attack tools
 - `bruteforce_prep.sh` one-command SSH setup for brute-force testing
 - Cleaned, consistent log message format (IP always before MAC)
+
+### v5.0 — Current: IoT-Aware NIDS Foundation
+- Renamed project/application version to v5.0
+- Added passive IoT device profiling module (`modules/iot_profile.py`)
+- Added IoT/LAN device inventory logging for newly observed devices
+- Added scan-like IoT behavior alerting based on destination-port fanout
+- Added GUI module toggle and config defaults for IoT profiling
+- Added lightweight installable IoT endpoint agent (`agent/nids-agent.py`)
+- Added systemd installer/uninstaller for Linux-based IoT devices
+- Added local JSONL event logging and optional controller POST support for endpoint devices
 
 ---
 
@@ -53,6 +63,7 @@
 | `modules/dos.py` | ICMP and TCP SYN flood | Packets-per-second threshold + CUSUM change-point detection |
 | `modules/spoof.py` | ARP poisoning, ARP reply burst, LLMNR/mDNS/NBNS spoof, Rogue DHCP, DNS spoof, Bogon IPs, TTL anomaly | Multi-signal confidence scoring with Z-score TTL modelling |
 | `modules/macfilter.py` | Explicitly blocked MAC addresses | Blocklist policy with dynamic gateway MAC learning |
+| `modules/iot_profile.py` | Passive IoT/LAN device inventory and scan-like fanout hints | Device profiling + destination-port fanout |
 
 ### Supporting Infrastructure
 
@@ -75,6 +86,16 @@
 | `msp_att/metasploit_only_gui.py` | Unified attacker GUI — Metasploit and generic attack tools (Nmap, hping3, Scapy, Hydra) |
 | `msp_att/bruteforce_db.json` | Brute-force attack profiles with username/password lists |
 
+### IoT Endpoint Agent
+
+| File | Role |
+|------|------|
+| `agent/nids-agent.py` | Lightweight stdlib-only Linux agent for IoT/Raspberry Pi-style endpoints |
+| `agent/agent_config.json` | Agent ID, thresholds, local log path, and optional controller URL |
+| `agent/install-agent.sh` | Installs the endpoint agent to `/opt/nids-agent` and enables systemd service |
+| `agent/uninstall-agent.sh` | Removes the systemd service and installed agent files |
+| `agent/systemd/nids-agent.service` | systemd unit for boot-time endpoint monitoring |
+
 ---
 
 ## Architecture
@@ -91,6 +112,7 @@ modules/
   dos.py                    DoS flood — threshold + CUSUM
   spoof.py                  Spoof — ARP, LLMNR, mDNS, NBNS, DHCP, DNS, TTL, Bogon
   macfilter.py              MAC filter — explicit blocklist
+  iot_profile.py            IoT profile — passive inventory and behavior hints
   firewall.py               iptables / nftables helpers
   host_network.py           Local network facts and trusted IP resolution
   arpnft.py                 nftables ARP drop
@@ -100,6 +122,11 @@ msp_att/                    Attacker-side tools (separate VM)
   metasploit_only_gui.py    Unified attack GUI
   bruteforce_db.json        Brute-force credential profiles
   generated_wordlists/      Auto-generated wordlist files
+
+agent/                     Optional installable IoT endpoint agent
+  nids-agent.py             Local endpoint monitoring
+  install-agent.sh          Linux/systemd installer
+  agent_config.json         Agent configuration
 
 documentations/
   deliverables.md           Completed work log

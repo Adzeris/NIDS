@@ -1,0 +1,16 @@
+[Unit]
+Description=NIDS IoT Endpoint Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/nids-agent/nids-agent.py --config /etc/nids-agent/agent_config.json
+Restart=on-failure
+RestartSec=5
+
+# The agent can run as root so it can read auth logs on small Linux devices.
+# It does not open raw packet sockets or modify firewall state.
+
+[Install]
+WantedBy=multi-user.target

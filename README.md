@@ -1,9 +1,9 @@
-# NIDS — Network Intrusion Detection System (v4.0)
+# NIDS — Network Intrusion Detection System (v5.0)
 
 A modular, Python-based Network Intrusion Detection System for Linux.  
-Version `4.0` runs with a single adaptive detection profile focused on live lab defense: detect, alert, and block.
+Version `5.0` runs with a single adaptive detection profile focused on live lab defense: detect, alert, and block.
 
-Project notes are available in `documentations/deliverables.md` and planning tables are in `documentations/goals.md`.
+Project notes are available in `documentations/deliverables.md`, IoT integration notes are in `documentations/iot-integration.md`, and planning tables are in `documentations/goals.md`.
 
 ## What It Does
 
@@ -18,6 +18,7 @@ The system monitors traffic and host auth logs, then raises alerts and applies b
 | **DoS / Flood** | ICMP/SYN flood detection | PPS threshold + CUSUM drift |
 | **IP Spoof** | ARP/name-service/DHCP/DNS spoof detection | Multi-signal confidence + TTL anomaly scoring |
 | **MAC Filter** | Explicit MAC blocklist enforcement | Policy match events |
+| **IoT Profile** | Passive IoT/LAN device inventory and anomaly hints | Device profiling + port-fanout behavior |
 
 Scan types detected: TCP SYN, Xmas, Null, FIN, ACK (stealth), UDP probes — with fast and slow detection windows.
 
@@ -27,18 +28,25 @@ Scan types detected: TCP SYN, Xmas, Null, FIN, ACK (stealth), UDP probes — wit
 - **Per-alert feature vectors** and **confidence** fields on structured events
 - **Structured JSONL** and run metadata (run ID, config hash, git commit when available)
 - **Consistent log formatting** with IP first, then MAC
+- **IoT profiling foundation**: passive device inventory plus scan-like port-fanout alerts
+- **Optional IoT endpoint agent**: lightweight Linux agent for installable IoT/Raspberry Pi-style devices
 
 ## Architecture
 
 ```
-NIDS 4.0.desktop         Double-click to launch the app (runs nids.sh). Run installer once
+NIDS 5.0.desktop         Double-click to launch the app (runs nids.sh). Run installer once
                            so paths/icons are correct (see installer/ below).
-nids-desktop-exec.sh     Desktop-launch helper used by NIDS 4.0.desktop
+nids-desktop-exec.sh     Desktop-launch helper used by NIDS 5.0.desktop
 nids_config.json         Saved GUI/module configuration
 installer/
   install.sh               Full installer (venv, pip, menu shortcut, rewrites launchers)
   Install NIDS.desktop     Double-click runs install.sh next to it
   installer-desktop-exec.sh Desktop-launch helper used by Install NIDS.desktop
+agent/
+  nids-agent.py            Lightweight IoT endpoint agent (no GUI, stdlib only)
+  agent_config.json        Agent thresholds, logging, and optional controller URL
+  install-agent.sh         Installs the agent as a systemd service
+  uninstall-agent.sh       Removes the agent service
 
 engine.py                  Central orchestrator — starts detector threads, collects events
 config.py                  Unified configuration with schema versioning
@@ -51,6 +59,7 @@ modules/
   dos.py                   DoSDetector — CUSUM change-point detection
   spoof.py                 SpoofDetector — Z-score TTL + multi-signal confidence
   macfilter.py             MACFilterDetector — policy enforcement
+  iot_profile.py           IoTProfileDetector — passive device inventory + behavior hints
   firewall.py              Shared iptables helpers
   host_network.py          Local host network facts (interfaces, gateway, neighbors)
   arpnft.py                nftables ARP/L2 drop
@@ -70,17 +79,17 @@ pip install -r requirements.txt
 # Or run headless
 sudo python3 engine.py
 
-# Or double-click **NIDS 4.0.desktop** after ./installer/install.sh once (see Desktop launchers below)
+# Or double-click **NIDS 5.0.desktop** after ./installer/install.sh once (see Desktop launchers below)
 ```
 
 ### Desktop launchers
 
 | File | Purpose |
 |------|---------|
-| **`NIDS 4.0.desktop`** (repo root) | Double-click to **start NIDS** through `nids-desktop-exec.sh` -> `nids.sh`. |
+| **`NIDS 5.0.desktop`** (repo root) | Double-click to **start NIDS** through `nids-desktop-exec.sh` -> `nids.sh`. |
 | **`installer/Install NIDS.desktop`** | Double-click to **run the installer** through `installer-desktop-exec.sh` -> `install.sh`. |
 
-**One-time setup** (venv + correct icon + rewritten `NIDS 4.0.desktop`):
+**One-time setup** (venv + correct icon + rewritten `NIDS 5.0.desktop`):
 ```bash
 chmod +x installer/install.sh installer/installer-desktop-exec.sh nids.sh nids-desktop-exec.sh
 ./installer/install.sh
@@ -96,6 +105,21 @@ If you move or rename the project folder, run `./installer/install.sh` once from
 ## Configuration
 
 Runtime settings edited in the GUI are saved to `nids_config.json`. This includes interface/network mode, enabled modules, thresholds, spoof settings, logging path, and MAC allow/block/detected lists.
+
+## IoT Modes
+
+NIDS v5 supports two IoT paths:
+
+- **Gateway monitoring**: enable the optional `IoT Device Profiling` module in the GUI to passively observe IoT/LAN devices from the network side.
+- **Endpoint agent**: install `agent/nids-agent.py` directly on Linux-based IoT devices such as Raspberry Pi, Debian/Ubuntu ARM, or similar boards.
+
+Install the endpoint agent on a target device:
+
+```bash
+sudo ./agent/install-agent.sh
+```
+
+The endpoint agent logs JSONL events locally and can optionally POST events to a controller URL configured in `/etc/nids-agent/agent_config.json`.
 
 ## Evaluation Note
 

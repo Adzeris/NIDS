@@ -24,7 +24,7 @@ from PyQt5.QtGui import QFont, QColor, QTextCharFormat, QIcon, QPalette, QPainte
 from config import load_config, save_config
 from modules.host_network import list_interfaces
 
-APP_VERSION = "4.0"
+APP_VERSION = "5.0"
 
 
 # ---------------------------------------------------------------------------
@@ -472,8 +472,9 @@ class MainWindow(QMainWindow):
         self.chk_bruteforce = QCheckBox("SSH Brute-Force Detector")
         self.chk_dos = QCheckBox("DoS / ICMP Flood Detector")
         self.chk_spoof = QCheckBox("IP Spoof Detector")
+        self.chk_iot_profile = QCheckBox("IoT Device Profiling")
         for cb in [self.chk_portscan, self.chk_bruteforce, self.chk_dos,
-                   self.chk_spoof]:
+                   self.chk_spoof, self.chk_iot_profile]:
             mod_lay.addWidget(cb)
         lay.addWidget(mod_grp)
 
@@ -918,7 +919,8 @@ class MainWindow(QMainWindow):
             "Brute Force - SSH/FTP login attack detection with timing-pattern analysis\n"
             "DoS / Flood - ICMP and SYN flood detection with change-point monitoring\n"
             "IP Spoofing - ARP, DNS, DHCP, and TTL anomaly detection\n"
-            "MAC Filtering - Allow/block policy enforcement with event instrumentation"
+            "MAC Filtering - Allow/block policy enforcement with event instrumentation\n"
+            "IoT Profiling - Optional device inventory and behavior-anomaly foundation"
         )
         modules.setAlignment(Qt.AlignCenter)
         modules.setStyleSheet("font-size: 12px; color: #8b949e; line-height: 1.6;")
@@ -1114,6 +1116,7 @@ class MainWindow(QMainWindow):
         self.chk_bruteforce.setChecked(m["bruteforce"])
         self.chk_dos.setChecked(m["dos"])
         self.chk_spoof.setChecked(m["spoof"])
+        self.chk_iot_profile.setChecked(m.get("iot_profile", True))
 
         ps = c["portscan"]
         self.spin_ps_ports.setValue(ps["port_threshold"])
@@ -1210,6 +1213,7 @@ class MainWindow(QMainWindow):
         c["modules"]["bruteforce"] = self.chk_bruteforce.isChecked()
         c["modules"]["dos"] = self.chk_dos.isChecked()
         c["modules"]["spoof"] = self.chk_spoof.isChecked()
+        c["modules"]["iot_profile"] = self.chk_iot_profile.isChecked()
         # MAC policy enforcement is always enabled by default.
         c["modules"]["macfilter"] = True
 

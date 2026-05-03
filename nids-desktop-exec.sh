@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Started from NIDS 4.0.desktop (see Exec=...) or run directly: always lives next to nids.sh.
+# Started from NIDS 5.0.desktop (see Exec=...) or run directly: always lives next to nids.sh.
 # Runs nids.sh via /bin/bash explicitly so file managers don't hit ENOENT on raw script exec.
 
 set -euo pipefail

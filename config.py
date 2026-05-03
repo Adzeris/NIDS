@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified configuration for the NIDS research platform (v4.0).
+Unified configuration for the NIDS research platform (v5.0).
 All thresholds, interface settings, module toggles, and research
 parameters live here.
 
@@ -13,7 +13,7 @@ import os
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nids_config.json")
 
-CONFIG_SCHEMA_VERSION = "4.0"
+CONFIG_SCHEMA_VERSION = "5.0"
 
 DEFAULTS = {
     "schema_version": CONFIG_SCHEMA_VERSION,
@@ -26,6 +26,7 @@ DEFAULTS = {
         "dos": True,
         "spoof": True,
         "macfilter": True,
+        "iot_profile": True,
     },
 
     "research": {
@@ -111,6 +112,13 @@ DEFAULTS = {
         "allowed_macs": [],
         "blocked_macs": [],
         "detected_macs": [],
+    },
+
+    "iot": {
+        "log_new_devices": True,
+        "fanout_window_sec": 300,
+        "fanout_port_threshold": 20,
+        "alert_cooldown_sec": 300,
     },
 
     "logging": {

@@ -1,5 +1,5 @@
 {
-  "schema_version": "4.0",
+  "schema_version": "5.0",
   "interface": "auto",
   "network_mode": "nat",
   "modules": {
@@ -7,7 +7,8 @@
     "bruteforce": true,
     "dos": true,
     "spoof": true,
-    "macfilter": true
+    "macfilter": true,
+    "iot_profile": true
   },
   "research": {
     "detect_only": false,
@@ -98,8 +99,14 @@
       }
     ]
   },
+  "iot": {
+    "log_new_devices": true,
+    "fanout_window_sec": 300,
+    "fanout_port_threshold": 20,
+    "alert_cooldown_sec": 300
+  },
   "logging": {
-    "log_dir": "/home/kali/Desktop/NIDS 4.0/logs",
+    "log_dir": "/home/kali/Desktop/NIDS 5.0/logs",
     "log_to_file": true
   }
 }

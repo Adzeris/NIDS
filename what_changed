@@ -1,0 +1,49 @@
+NIDS v5.0 - What Changed
+
+Folder/application rename
+- Project folder was renamed from `NIDS 4.0` to `NIDS 5.0`.
+- Application version was updated to `5.0`.
+- Desktop launcher was renamed to `NIDS 5.0.desktop`.
+- Installer now regenerates `NIDS 5.0.desktop`.
+- `nids_config.json` now points logs to `/home/kali/Desktop/NIDS 5.0/logs`.
+
+Launcher reliability
+- Desktop launchers use helper scripts so paths with spaces work more reliably.
+- XFCE trusted-launcher metadata is handled by the installer.
+- The launcher/root helper flow preserves display variables for `pkexec` without showing a huge password prompt.
+
+IoT gateway monitoring
+- Added optional `modules/iot_profile.py`.
+- This module runs from the main NIDS engine/GUI.
+- It passively observes IoT/LAN devices from the network side.
+- It logs newly observed devices and alerts on scan-like destination-port fanout.
+- It is intentionally non-blocking for safe inventory/baselining.
+
+IoT endpoint agent
+- Added `agent/nids-agent.py`.
+- Added `agent/agent_config.json`.
+- Added `agent/install-agent.sh`.
+- Added `agent/uninstall-agent.sh`.
+- Added `agent/systemd/nids-agent.service`.
+- The endpoint agent is for Linux-based IoT devices such as Raspberry Pi, Debian/Ubuntu ARM, Kali ARM, or similar boards.
+- The agent runs without the GUI and uses only Python standard-library modules.
+- It monitors failed-login bursts, outbound port fanout, and high packet-rate behavior.
+- It writes JSONL events to `/var/log/nids-agent/events.jsonl`.
+- It can optionally POST events to a controller URL later.
+
+GUI/config changes
+- Added an `IoT Device Profiling` module toggle.
+- Added `iot_profile` to the module config.
+- Added `iot` thresholds/config defaults.
+- Updated the GUI About section to mention IoT profiling.
+
+Documentation changes
+- Updated `README.md` for v5.0 and IoT modes.
+- Updated `documentations/deliverables.md` with v5.0 deliverables.
+- Updated `documentations/modules-simple-guide.md` with IoT profile and endpoint-agent notes.
+- Added `documentations/iot-integration.md` explaining the two IoT modes.
+
+Important design note
+- `modules/iot_profile.py` is gateway-side monitoring.
+- `agent/nids-agent.py` is endpoint-side installation.
+- Both are optional and solve different IoT deployment problems.

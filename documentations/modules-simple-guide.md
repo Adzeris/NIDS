@@ -30,6 +30,9 @@ This is the plain-English guide to what each module does.
 - `modules/macfilter.py`  
   Enforces explicit MAC blocklist policy.
 
+- `modules/iot_profile.py`  
+  Optional gateway-side IoT/LAN profiling. It passively learns devices seen on the network and raises behavior hints such as scan-like destination-port fanout.
+
 ## Support Modules (`modules/`)
 
 - `modules/detector_base.py`  
@@ -57,6 +60,12 @@ This is the plain-English guide to what each module does.
 
 - `installer/install.sh`  
   One-time setup (venv, dependencies, menu shortcut, launcher path fixes).
+
+- `agent/nids-agent.py`  
+  Optional endpoint agent for Linux-based IoT devices. It runs without the GUI and logs local security events.
+
+- `agent/install-agent.sh`  
+  Installs the IoT endpoint agent to `/opt/nids-agent`, creates config under `/etc/nids-agent`, and enables the systemd service.
 
 - `bruteforce_prep.sh`  
   One-time defender setup for SSH brute-force demo testing.

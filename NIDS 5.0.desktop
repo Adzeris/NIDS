@@ -1,9 +1,9 @@
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=NIDS 4.0
+Name=NIDS 5.0
 Comment=Network Intrusion Detection System - Research Platform
-Exec=/bin/bash "/home/kali/Desktop/NIDS 4.0/nids-desktop-exec.sh"
+Exec=/bin/bash "/home/kali/Desktop/NIDS 5.0/nids-desktop-exec.sh"
 Icon=nids
 GenericName=Network Intrusion Detection
 Terminal=false

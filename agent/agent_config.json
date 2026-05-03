@@ -1,0 +1,21 @@
+{
+  "agent_id": "auto",
+  "controller_url": "",
+  "monitor_interval_sec": 5,
+  "local_log": true,
+  "log_path": "/var/log/nids-agent/events.jsonl",
+  "auth_log_paths": [
+    "/var/log/auth.log",
+    "/var/log/secure"
+  ],
+  "interfaces": [
+    "auto"
+  ],
+  "thresholds": {
+    "failed_login_window_sec": 300,
+    "failed_login_threshold": 5,
+    "port_fanout_window_sec": 300,
+    "port_fanout_threshold": 20,
+    "pps_threshold": 1000
+  }
+}

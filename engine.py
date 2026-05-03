@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NIDS engine v4.0 — research-aware central orchestrator.
+NIDS engine v5.0 — research-aware central orchestrator.
 
 Instantiates class-based detectors, manages threads, and collects
 structured research events.  Each run carries:
@@ -30,6 +30,7 @@ from modules.bruteforce import BruteForceDetector
 from modules.dos import DoSDetector
 from modules.spoof import SpoofDetector
 from modules.macfilter import MACFilterDetector
+from modules.iot_profile import IoTProfileDetector
 
 
 DETECTOR_CLASSES = {
@@ -38,6 +39,7 @@ DETECTOR_CLASSES = {
     "dos":        DoSDetector,
     "spoof":      SpoofDetector,
     "macfilter":  MACFilterDetector,
+    "iot_profile": IoTProfileDetector,
 }
 
 
@@ -178,7 +180,7 @@ class NIDSEngine:
                 self.cfg_hash = _config_hash(self.cfg)
         else:
             # Modules that do packet capture cannot run without an interface.
-            for mod in ("portscan", "dos", "spoof", "macfilter"):
+            for mod in ("portscan", "dos", "spoof", "macfilter", "iot_profile"):
                 if enabled.get(mod, False):
                     enabled[mod] = False
             self._log(f"{_ts()} [WARN] {iface_note}; capture modules disabled")
@@ -186,7 +188,7 @@ class NIDSEngine:
         if iface_note:
             self._log(f"{_ts()} [WARN] {iface_note}")
 
-        self._log(f"{_ts()} [ENGINE] Starting NIDS v4.0 — interface: {self.cfg['interface']}")
+        self._log(f"{_ts()} [ENGINE] Starting NIDS v5.0 — interface: {self.cfg['interface']}")
         self._log(f"{_ts()} [ENGINE] Run: {self.run_id}  config: {self.cfg_hash}")
 
         for name, cls in DETECTOR_CLASSES.items():

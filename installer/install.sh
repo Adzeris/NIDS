@@ -42,11 +42,11 @@ EOF
 }
 
 write_project_launcher() {
-  cat > "$ROOT/NIDS 4.0.desktop" <<EOF
+  cat > "$ROOT/NIDS 5.0.desktop" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=NIDS 4.0
+Name=NIDS 5.0
 Comment=Network Intrusion Detection System - Research Platform
 Exec=/bin/bash "$ROOT/nids-desktop-exec.sh"
 Icon=nids
@@ -56,7 +56,7 @@ Categories=Network;
 Keywords=firewall;intrusion;detection;nids;
 StartupNotify=false
 EOF
-  trust_desktop_file "$ROOT/NIDS 4.0.desktop"
+  trust_desktop_file "$ROOT/NIDS 5.0.desktop"
 }
 
 # Old layout had install at repo root; safe to remove after migration.
@@ -109,7 +109,7 @@ chmod +x "$INSTALLER_DIR/install.sh" "$INSTALLER_DIR/installer-desktop-exec.sh" 
 echo "[OK] Permissions set"
 
 VERSION="$(sed -n 's/^APP_VERSION[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/gui.py" | head -n1)"
-[[ -z "$VERSION" ]] && VERSION="4.0"
+[[ -z "$VERSION" ]] && VERSION="5.0"
 
 DESKTOP_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 mkdir -p "$DESKTOP_DIR"
@@ -139,7 +139,7 @@ echo "  Installation complete!"
 echo "=============================="
 echo ""
 echo "  Install again: double-click installer/Install NIDS.desktop"
-echo "  Run NIDS: app menu → NIDS, or double-click NIDS 4.0.desktop"
+echo "  Run NIDS: app menu → NIDS, or double-click NIDS 5.0.desktop"
 echo ""
 echo "  Note: NIDS needs root for packet capture (password prompt)."
 echo ""

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Base detector interface for the NIDS research platform (v4.0).
+Base detector interface for the NIDS research platform (v5.0).
 
 Provides:
   - BaseDetector: abstract base class with structured event emission,
